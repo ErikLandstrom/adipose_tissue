@@ -1,0 +1,288 @@
+---
+title: "MIDY adipose tissue - first analysis"
+output: 
+  BiocStyle::html_document:
+    toc_float: true
+---
+
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(DEP)
+library(conflicted)
+library(biomaRt)
+library(naniar)
+library(knitr)
+library(readxl)
+library(gridExtra)
+library(visdat)
+```
+
+# 2. Preprocessing
+
+## 2.1 Read rawdata from Maxquant
+
+```{r, }
+make_tibble_for_DEP <- function(tb = "ProteinGroups.txt") {
+  data_raw <- read_tsv(tb)
+  lfq_col_names <- str_extract(colnames(data_raw), "LFQ.+")
+  lfq_col_names <- lfq_col_names[which(!is.na(lfq_col_names))]
+  
+  data_raw <<- data_raw %>%
+  dplyr::select(`Protein IDs`, `Majority protein IDs`,
+                `Fasta headers`, Peptides, 
+                `Razor + unique peptides`, `Unique peptides`, 
+                lfq_col_names,
+                `Only identified by site`, `Reverse`,
+                `Potential contaminant`)
+}
+```
+
+```{r}
+make_tibble_for_DEP("proteinGroups.txt")
+```
+
+## 2.2 Remove contaminant and reverse hits
+
+Calculate number of contaminants and reverse hits.
+
+```{r}
+data_raw %>%
+  summarise(n_reverse = length(Reverse) - sum(is.na(Reverse)),
+            n_contaminant = length(Reverse) - sum(is.na(`Potential contaminant`)))
+```
+
+```{r}
+remove_contaminants_and_reverse_hits <- function(tb) {
+  data_raw <<- tb %>%
+    dplyr::filter(is.na(`Potential contaminant`)) %>%
+    dplyr::filter(is.na(Reverse))
+}
+```
+
+```{r}
+remove_contaminants_and_reverse_hits(data_raw)
+dim(data_raw)
+```
+
+## 2.3 Add gene names from BiomaRt
+
+```{r scripts}
+# Remove isoform from refseq identifier
+data_raw <- data_raw %>%
+  mutate(Protein_ID = str_extract(`Majority protein IDs`, "NP_[0-9]+|XP_[0-9]+"))
+```
+
+Extract gene names from biomart.
+
+```{r}
+convert_NCBIIDs_to_gene_names <- function(tb) {
+  
+  # Load sus scrofa dataset from biomaRt and change column name to Protein_ID
+  ensembl <- useMart("ensembl", dataset = "sscrofa_gene_ensembl")  
+  
+  # Get gene names for peptide IDs
+  NP <- as_tibble(getBM(attributes = c("refseq_peptide", "external_gene_name"),
+              filters = "refseq_peptide",
+              values = tb,
+              mart = ensembl
+              ))
+  
+  NP <- NP %>%
+    rename(Protein_ID = refseq_peptide)
+  
+  # Load sus scrofa dataset from biomaRt and change column name to Protein_ID
+  XP <- as.tibble(getBM(attributes = c("refseq_peptide_predicted", "external_gene_name"),
+              filters = "refseq_peptide_predicted",
+              values = tb,
+              mart = ensembl
+              ))
+  
+  XP <- XP %>%
+    rename(Protein_ID = refseq_peptide_predicted)
+  
+  # Use full_join to join the two tables
+  gene_names <- full_join(NP, XP, by = "Protein_ID")
+  
+  # Tidy data, gene names in one column and remove NAs
+  gene_names <- gene_names %>%
+    gather(external_gene_name.x, external_gene_name.y, key = "Source", value = "Gene_name") %>%
+    dplyr::select(Protein_ID, Gene_name) %>%
+    dplyr::filter(!is.na(Gene_name)) 
+  
+  # If there are any "" artifacts from the biomaRt search, replace them with NA
+  gene_names[gene_names == ""] <- NA
+  
+  # Save output in a tibble
+  gene_names <<- gene_names
+}
+
+convert_NCBIIDs_to_gene_names(data_raw$Protein_ID)
+```
+
+Join gene names with raw data by using protein IDs as identifiers.
+
+```{r join_genenames}
+data <- full_join(data_raw, gene_names, by = "Protein_ID")
+```
+
+Check if there are any duplicated gene names and identifiers.
+
+```{r unique}
+# gene names
+data$Gene_name %>% duplicated() %>% any()
+
+# identifiers
+data$Protein_ID %>% duplicated() %>% any()
+```
+
+Duplicated gene names were found in the data.
+
+```{r unique2}
+# Number of NA gene names
+data %>%
+  summarise(sum(is.na(Gene_name)))
+
+# Count number of instances a gene name appears
+data %>%
+  group_by(Gene_name) %>%
+  summarise(n = n()) %>%
+  dplyr::filter(n > 1) %>%
+  arrange()
+
+# Make unique "row names", either gene name or identifier
+data_unique <- make_unique(data, "Gene_name", "Protein_ID")
+
+data_unique %>%
+  dplyr::select(name, ID) %>% 
+  duplicated() %>%
+  any()
+```
+
+## 2.4 Generate a SummarizedExperiment
+
+```{r SExperiment}
+# Grep for lfq columns
+lfq_columns <- grep("LFQ.", colnames(data_unique))
+
+# Read experimental design
+experimental_design <- read_xlsx("MIDY_adipose_experimental_design.xlsx")
+
+# Generate summarized experiment
+data_se <- make_se(data_unique, lfq_columns, experimental_design)
+
+data_se
+```
+
+# 3. Analysis
+
+## 3.1 Missing value filtering
+
+```{r frequency}
+plot_frequency(data_se)
+```
+
+
+```{r}
+# Filter for proteins present in all samples of at least one condition
+strict_filter <- filter_missval(data_se, thr = 0)
+filter_missval(data_se, thr = 1)
+filter_missval(data_se, thr = 2)
+data_2_valid_values <- filter_missval(data_se, thr = 3)
+```
+
+```{r}
+plot_missval(strict_filter)
+plot_missval(data_2_valid_values)
+```
+
+```{r}
+plot_detect(strict_filter)
+plot_detect(data_2_valid_values)
+```
+
+```{r}
+plot_numbers(strict_filter)
+plot_numbers(data_2_valid_values)
+```
+
+```{r}
+plot_coverage(strict_filter)
+plot_coverage(data_2_valid_values)
+```
+
+## 3.2 Normalization
+
+```{r}
+strict_filter_norm <- normalize_vsn(strict_filter)
+meanSdPlot(strict_filter)
+meanSdPlot(strict_filter_norm)
+data_2_vv_norm <- normalize_vsn(data_2_valid_values)
+meanSdPlot(data_2_valid_values)$gg + ggtitle("2 valid values")
+meanSdPlot(data_2_vv_norm)$gg + ggtitle("2 valid values normalized")
+
+```
+
+```{r}
+p1 <- plot_normalization(data_2_valid_values)
+p2 <- plot_normalization(data_2_vv_norm)
+grid.arrange(p1, p2)
+
+plot_normalization(data_2_valid_values)
+plot_normalization(data_2_vv_norm)
+```
+
+## 3.3 Save normalized data
+Save normalized data as tibble for further analysis with `naniar` and more.
+
+```{r}
+# Save unfiltered data that has been run through DEP
+dep_data_unmodified_wide <- get_df_wide(data_se)
+
+write_tsv(dep_data_unmodified_wide, "MIDY_adipose_all_proteins_181211.txt")
+```
+
+
+```{r save_norm_filt}
+# long
+vv2_norm_long <- get_df_long(data_2_vv_norm)
+vv2_norm_long
+
+# wide
+vv2_norm_wide <- get_df_wide(data_2_vv_norm)
+vv2_norm_wide
+```
+
+# 4 Analysis with `naniar`
+
+## 4.1 Visual inspection of missing values
+
+```{r missing}
+vis_dat(dep_data_unmodified_wide) + 
+  labs(
+    title = "Original data passed through unmodified in DEP"
+  )
+vis_miss(dep_data_unmodified_wide %>%
+           dplyr::select(m_wt_736:sc_wt_745), cluster = TRUE)
+vis_miss(dep_data_unmodified_wide %>%
+           dplyr::select(m_wt_736:sc_wt_745), sort_miss = TRUE)
+
+vis_dat(vv2_norm_wide) +
+  labs(
+    title = "Proteins with at least 3 detected proteins in at least one group"
+  )
+vis_miss(vv2_norm_wide %>%
+           dplyr::select(m_wt_736:sc_wt_745), cluster = TRUE)
+vis_miss(vv2_norm_wide %>%
+           dplyr::select(m_wt_736:sc_wt_745), sort_miss = TRUE)
+```
+
+
+
+
