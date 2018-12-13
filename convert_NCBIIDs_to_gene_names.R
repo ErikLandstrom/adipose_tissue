@@ -3,9 +3,25 @@
 ### Author: Erik Ländström
 
 
+# Description -------------------------------------------------------------
+
+# Takes refseq protein IDs from NCBI and converts them to gene names using the
+# bioMart package. Saves gene names and IDs in a tibble called gene names that 
+# can be joined with the original dataset 
 
 
-convert_NCBIIDs_to_gene_names <- function(tb) {
+# Arguments ---------------------------------------------------------------
+
+# vec = a vector of protein refseq IDs
+
+
+# Function ----------------------------------------------------------------
+
+
+convert_NCBIIDs_to_gene_names <- function(vec) {
+  # Library
+  library(biomaRt)
+  library(tidyverse)
   
   # Load sus scrofa dataset from biomaRt and change column name to Protein_ID
   ensembl <- useMart("ensembl", dataset = "sscrofa_gene_ensembl")  
@@ -13,7 +29,7 @@ convert_NCBIIDs_to_gene_names <- function(tb) {
   # Get gene names for peptide IDs
   NP <- as_tibble(getBM(attributes = c("refseq_peptide", "external_gene_name"),
                         filters = "refseq_peptide",
-                        values = tb,
+                        values = vec,
                         mart = ensembl
   ))
   
@@ -23,7 +39,7 @@ convert_NCBIIDs_to_gene_names <- function(tb) {
   # Load sus scrofa dataset from biomaRt and change column name to Protein_ID
   XP <- as.tibble(getBM(attributes = c("refseq_peptide_predicted", "external_gene_name"),
                         filters = "refseq_peptide_predicted",
-                        values = tb,
+                        values = vec,
                         mart = ensembl
   ))
   
