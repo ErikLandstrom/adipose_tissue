@@ -2,11 +2,26 @@
 ### Date: 181210
 ### Author: Erik Ländström
 
+
+# Description -------------------------------------------------------------
+
 # Reads and converts the proteinGroups.txt file from maxquant into file that is
 # ready to use with the DEP package.
 
-make_tibble_for_DEP <- function(tb = "ProteinGroups.txt") {
-  data_raw <- read_tsv(tb)
+
+# Arguments ---------------------------------------------------------------
+
+# file = a text file, output from maxquant called "proteinGroups.txt"
+
+
+# Function ----------------------------------------------------------------
+
+make_tibble_for_DEP <- function(file = "proteinGroups.txt") {
+  # Library 
+  library(tidyverse)
+  
+  # Read file
+  data_raw <- read_tsv(file)
   
   # Extract LFQ column names
   lfq_col_names <- str_extract(colnames(data_raw), "LFQ.+")
