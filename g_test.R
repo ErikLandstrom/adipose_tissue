@@ -29,7 +29,7 @@ g_test <- function (tb) {
     gather(m_wt_736:sc_wt_745, key = "Sample", value = "LFQ") %>%
     separate(col = "Sample", into = c("tissue", "genotype", "sample"), sep = "_") %>%
     unite(group, tissue, genotype) %>%
-    select(name, group, sample, LFQ, everything())
+    dplyr::select(name, group, sample, LFQ, everything())
   
   # Make nabular tibble
   original_data_long_nab <- nabular(original_data_long)
@@ -74,5 +74,12 @@ g_test <- function (tb) {
     summarise(g_value = 2 * sum(gtest_sample_term)) %>% # Calculates the g-value for each protein
     group_by(name) %>%
     mutate(gtest_pvalue = 1 - pchisq(g_value, n_groups - 1))
+  
+  # Join g_test with number of observed values per group
+  g_test <<- full_join(g_test, 
+            count_matrix %>%
+              dplyr::select(name, group, observed) %>%
+              spread(key = "group", value = observed),
+            by = "name")
 }
 
