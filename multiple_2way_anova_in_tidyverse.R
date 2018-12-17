@@ -20,6 +20,7 @@
 # Function ----------------------------------------------------------------
 
 multiple_2way_anova_in_tidyverse <- function(tb, factor1, factor2) {
+  
   # Libraries
   library(tidyverse)
   library(broom)
