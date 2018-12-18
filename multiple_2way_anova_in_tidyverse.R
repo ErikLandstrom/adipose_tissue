@@ -26,10 +26,11 @@ multiple_2way_anova_in_tidyverse <- function(tb, factor1, factor2) {
   library(broom)
   
   # 2-way ANOVA
-  anova <<- tb %>%
+  anova <- tb %>%
     group_by(name) %>%
     nest() %>%
     mutate(anova = map(data, ~ aov(LFQ ~ eval(as.name(factor1)) * eval(as.name(factor2)), data = .x)),
            tidied = map(anova, tidy)) %>%
     unnest(tidied)
+  return(anova)
 }
