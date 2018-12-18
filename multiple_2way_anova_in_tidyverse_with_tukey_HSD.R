@@ -1,4 +1,4 @@
-### multiple_2way_anova_in_tidyverse
+### multiple_2way_anova_in_tidyverse_with_tukeyHSD
 ### Author: Erik Ländström
 ### Date: 181217
 
@@ -8,10 +8,11 @@
 # Performs a two way ANOVA for each feature of the dataset (e.g. protein),
 # using a tidy tibble in a longformat as input. Outputs a tibble with the 
 # the ANOVA statistics using the tidy function from the broom package.
+# Added tukeyHSD_test.
 
 # Save output like "name" <- function() {}
 
-# Use unnest(tidied) to extract p-values
+# Use unnest(tidy_.+) to extract p-values
 
 
 # Arguments ---------------------------------------------------------------
@@ -21,7 +22,7 @@
 
 # Function ----------------------------------------------------------------
 
-multiple_2way_anova_in_tidyverse <- function(tb) {
+multiple_2way_anova_in_tidyverse_with_tukeyHSD <- function(tb) {
   
   # Libraries
   library(tidyverse)
