@@ -9,6 +9,7 @@
 # using a tidy tibble in a longformat as input. Outputs a tibble with the 
 # the statistics for ttest object using the tidy function from the broom package.
 
+# Save output with t_test_+ <- multiple_ttests()
 
 # Arguments ---------------------------------------------------------------
 
@@ -26,8 +27,8 @@ multiple_ttests <- function(tb, col_name) {
   # t-test
   sym(col_name)
   
-  t_test <<-  tb %>%
-    select(name, !!sym(col_name), LFQ) %>%
+  t_test <-  tb %>%
+    dplyr::select(name, !!sym(col_name), LFQ) %>%
     group_by(name, !!sym(col_name)) %>%
     nest() %>%
     spread(key = !!sym(col_name), value = data) %>%
@@ -36,5 +37,6 @@ multiple_ttests <- function(tb, col_name) {
            mean_midy = mean(unlist(midy)),
            mean_wt = mean(unlist(wt)),
            log2_difference = mean_midy - mean_wt)
+  return(t_test)
 }
 
