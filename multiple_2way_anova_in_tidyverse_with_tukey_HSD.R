@@ -33,7 +33,8 @@ multiple_2way_anova_in_tidyverse_with_tukeyHSD <- function(tb) {
     group_by(name) %>%
     nest() %>%
     mutate(anova = map(data, ~ aov(LFQ ~ genotype * tissue, data = .x)),
-           tukey = map(data, ~ TukeyHSD(aov(LFQ ~ genotype * tissue, data = .x))),
+           tukey = map(data, ~ TukeyHSD(aov(LFQ ~ genotype * tissue, data = .x),
+                                        which = "genotype:tissue")),
            tidy_anova = map(anova, tidy),
            tidy_tukey = map(tukey, tidy))
   
