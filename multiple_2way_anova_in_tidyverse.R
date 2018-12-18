@@ -30,7 +30,7 @@ multiple_2way_anova_in_tidyverse <- function(tb) {
     group_by(name) %>%
     nest() %>%
     mutate(anova = map(data, ~ aov(LFQ ~ genotype * tissue, data = .x)),
-           tidied = map(anova, tidy)) %>%
-    unnest(tidied)
+           tidied = map(anova, tidy))
+  
   return(anova)
 }
