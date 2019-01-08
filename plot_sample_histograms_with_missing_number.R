@@ -1,4 +1,4 @@
-### plot_histogram_with_missing_values
+### plot_sample_histogram_with_missing_values
 ### Author: Erik Ländström
 ### Date: 181213
 
