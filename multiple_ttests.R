@@ -33,7 +33,7 @@ multiple_ttests <- function(tb, col_name) {
     nest() %>%
     spread(key = !!sym(col_name), value = data) %>%
     group_by(name) %>%
-    mutate(test = t.test(unlist(midy), unlist(wt))$p.value,
+    mutate(p_value = t.test(unlist(midy), unlist(wt))$p.value,
            mean_midy = mean(unlist(midy)),
            mean_wt = mean(unlist(wt)),
            log2_difference = mean_midy - mean_wt)
