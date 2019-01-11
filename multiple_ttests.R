@@ -14,7 +14,7 @@
 # Arguments ---------------------------------------------------------------
 
 # tb = tidy tibble in long format
-# col_name = character string with column name of the variable of interest
+# col_name = column name of the variable of interest, unquoted
 
 # Function ----------------------------------------------------------------
 
@@ -24,19 +24,21 @@ multiple_ttests <- function(tb, col_name) {
   library(tidyverse)
   library(broom)
   
-  # t-test
-  sym(col_name)
+  # Quote
+  col_name <- enquo(col_name)
   
+  # ttest
   t_test <-  tb %>%
-    dplyr::select(name, !!sym(col_name), LFQ) %>%
-    group_by(name, !!sym(col_name)) %>%
+    dplyr::select(name, !!col_name, LFQ) %>%
+    group_by(name, !!col_name) %>%
     nest() %>%
-    spread(key = !!sym(col_name), value = data) %>%
+    spread(key = !!col_name, value = data) %>%
     group_by(name) %>%
     mutate(p_value = t.test(unlist(midy), unlist(wt))$p.value,
            mean_midy = mean(unlist(midy)),
            mean_wt = mean(unlist(wt)),
            log2_difference = mean_midy - mean_wt)
+  
   return(t_test)
 }
 
