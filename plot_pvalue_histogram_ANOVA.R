@@ -11,14 +11,19 @@
 # Arguments ---------------------------------------------------------------
 
 # tb = tibble with tidy ANOVA results
+# col_name = name of column name with p-values
 # limit_max = integer, max y axis limit
 
 # Function ----------------------------------------------------------------
 
-plot_pvalue_histogram_ANOVA <- function(tb, limit_max) {
+plot_pvalue_histogram_ANOVA <- function(tb, col_name, limit_max) {
+  
+  # Quote
+  col_name <- enquo(col_name)
+  
+  # pvalue plot
   tb %>% 
-    dplyr::filter(term != "Residuals") %>%
-    ggplot(aes(x = p.value)) +
+    ggplot(aes(x = !!col_name)) +
     geom_histogram(breaks = seq(0, 1, 0.05), fill = "black", color = "white") +
     xlab("p-value") +
     ylab("Number of proteins") +
