@@ -37,7 +37,8 @@ multiple_ttests <- function(tb, col_name) {
     mutate(p_value = t.test(unlist(midy), unlist(wt))$p.value,
            mean_midy = mean(unlist(midy)),
            mean_wt = mean(unlist(wt)),
-           log2_difference = mean_midy - mean_wt)
+           log2_difference = mean_midy - mean_wt,
+           average_mean = (mean_midy + mean_wt) / 2)
   
   return(t_test)
 }
