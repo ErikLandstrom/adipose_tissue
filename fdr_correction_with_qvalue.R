@@ -13,7 +13,7 @@
 # Arguments ---------------------------------------------------------------
 
 # tb = tidy tibble containing pvalues
-
+# p_value_col = column containing p-values
 
 # Libraries ---------------------------------------------------------------
 
@@ -23,9 +23,17 @@
 
 # Function ----------------------------------------------------------------
 
-fdr_correction_with_qvalue <- function(tb) {
+fdr_correction_with_qvalue <- function(tb, p_value_col) {
+  
+  # Quote
+  p_value_col <- enquo(p_value_col)
+  
+  # fdr correction
   qvalues <- qvalue(as_vector(tb %>%
-                                dplyr::select(p.value)))
+                                ungroup() %>% # To make sure to only get one column
+                                dplyr::select(!!p_value_col)))
   
   return(qvalues)
 }
+
+
