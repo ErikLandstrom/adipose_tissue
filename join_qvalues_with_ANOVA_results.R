@@ -22,7 +22,7 @@ join_qvalues_with_ANOVA_results <- function(tb) {
   qvalues <- tibble(p.value = qvalues[["pvalues"]], qvalue = qvalues[["qvalues"]])
   
   # Join with ANOVA results
-  anova_results <- full_join(anova_results, qvalues, by = "p.value")
+  anova_results <- full_join(tb, qvalues, by = "p.value")
   
   return(anova_results)
 }
