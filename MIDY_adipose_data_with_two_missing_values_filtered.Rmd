@@ -13,7 +13,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Libraries
 
-```{r library, message = FALSE}
+```{r library, message = FALSE, warning = FALSE}
 library(tidyverse)
 library(DEP)
 library(conflicted)
@@ -24,6 +24,7 @@ library(readxl)
 library(gridExtra)
 library(visdat)
 library(qvalue)
+library(modelr)
 ```
 
 
@@ -212,24 +213,37 @@ adipose_imputed <- adipose_imputed %>%
   rename(LFQ = intensity)
 ```
 
+
+
+
+
 # 2-way ANOVA
 
 Perform a 2-way ANOVA on the imputed dataset.
 
 ```{r echo = FALSE}
-multiple_2way_anova_in_tidyverse_with_tukeyHSD <- function(tb) {
+multiple_2way_anova_in_tidyverse_with_tukeyHSD <- function(tb, cases, observations,
+                                                           independent_var1,
+                                                           independent_var2) {
   
   # Libraries
   library(tidyverse)
   library(broom)
   
+  # Quoting
+  cases <- enquo(cases)
+  
+  lm_formula <- as.formula(paste(observations, "~", independent_var1, "*", independent_var2))
+  
+  interaction_effect <- paste(independent_var1, ":", independent_var2, sep = "")
+  
   # 2-way ANOVA
   anova <- tb %>%
-    group_by(name) %>%
+    group_by(!!cases) %>%
     nest() %>%
-    mutate(anova = map(data, ~ aov(LFQ ~ genotype * tissue, data = .x)),
-           tukey = map(data, ~ TukeyHSD(aov(LFQ ~ genotype * tissue, data = .x),
-                                        which = "genotype:tissue")),
+    mutate(anova = map(data, ~ aov(lm_formula, data = .x)),
+           tukey = map(data, ~ TukeyHSD(aov(lm_formula, data = .x),
+                                        which = interaction_effect)),
            tidy_anova = map(anova, tidy),
            tidy_tukey = map(tukey, tidy))
   
@@ -238,7 +252,7 @@ multiple_2way_anova_in_tidyverse_with_tukeyHSD <- function(tb) {
 ```
 
 ```{r anova}
-adipose_anova <- multiple_2way_anova_in_tidyverse_with_tukeyHSD(adipose_imputed)
+adipose_anova <- multiple_2way_anova_in_tidyverse_with_tukeyHSD(adipose_imputed, name, "LFQ", "genotype", "tissue")
 ```
 
 Unnest anova list-column.
@@ -254,10 +268,14 @@ make_significant_ANOVA_kable <- function(tb) {
         align = "c")
 }
 
-plot_pvalue_histogram_ANOVA <- function(tb, limit_max) {
+plot_pvalue_histogram_ANOVA <- function(tb, col_name, limit_max) {
+  
+  # Quote
+  col_name <- enquo(col_name)
+  
+  # pvalue plot
   tb %>% 
-    dplyr::filter(term != "Residuals") %>%
-    ggplot(aes(x = p.value)) +
+    ggplot(aes(x = !!col_name)) +
     geom_histogram(breaks = seq(0, 1, 0.05), fill = "black", color = "white") +
     xlab("p-value") +
     ylab("Number of proteins") +
@@ -277,24 +295,32 @@ anova_results <- adipose_anova %>%
   unnest(tidy_anova) %>% 
   dplyr::filter(term != "Residuals")
 
+anova_results
+
 # Count number of significant p-values
 make_significant_ANOVA_kable(anova_results)
 
 # Plot pvalue histograms for each factor
-plot_pvalue_histogram_ANOVA(anova_results, 750)
+plot_pvalue_histogram_ANOVA(anova_results, p.value, 750)
 ```
 
 ```{r}
 # Function
-fdr_correction_with_qvalue <- function(tb) {
+fdr_correction_with_qvalue <- function(tb, p_value_col) {
+  
+  # Quote
+  p_value_col <- enquo(p_value_col)
+  
+  # fdr correction
   qvalues <- qvalue(as_vector(tb %>%
-                                dplyr::select(p.value)))
-
+                                ungroup() %>% # To make sure to only get one column
+                                dplyr::select(!!p_value_col)))
+  
   return(qvalues)
 }
 
 # fdr correction with the qvalue package
-qvalues <- fdr_correction_with_qvalue(anova_results)
+qvalues <- fdr_correction_with_qvalue(anova_results, p.value)
 
 # Plot fdr statistics
 plot(qvalues)
@@ -350,7 +376,9 @@ multiple_2way_anova_in_tidyverse_with_no_interaction <- function(tb) {
     group_by(name) %>%
     nest() %>%
     mutate(anova = map(data, ~ aov(LFQ ~ genotype + tissue, data = .x)),
-           tidy_anova = map(anova, tidy))
+           tidy_anova = map(anova, tidy),
+           augment_anova = map(anova, augment),
+           glance_anova = map(anova, glance))
   
   return(anova)
 }
@@ -361,39 +389,39 @@ multiple_2way_anova_in_tidyverse_with_no_interaction <- function(tb) {
 adipose_anova_without_interaction <- multiple_2way_anova_in_tidyverse_with_no_interaction(adipose_imputed)
 
 # Extract p-values and more
-anova_results <- adipose_anova_without_interaction %>%
+anova_results_without_interaction <- adipose_anova_without_interaction %>%
   unnest(tidy_anova) %>% 
   dplyr::filter(term != "Residuals")
 
 # Count number of significant p-values and print a kable
-make_significant_ANOVA_kable(anova_results)
+make_significant_ANOVA_kable(anova_results_without_interaction)
 
 # Plot pvalue histograms for each factor
-plot_pvalue_histogram_ANOVA(anova_results, 750)
+plot_pvalue_histogram_ANOVA(anova_results_without_interaction, p.value, 750)
 
 ```
 
-The p-value histograms doesn't look any different, but with fewer p-values to
+The p-value histograms doesn't look much different, but with fewer p-values to
 correct maybe more q-values will be significant.
 
 ```{r no_interaction2}
 # fdr correction with the qvalue package
-qvalues <- fdr_correction_with_qvalue(anova_results)
+qvalues <- fdr_correction_with_qvalue(anova_results_without_interaction, p.value)
 
 # Plot fdr statistics
 plot(qvalues)
 hist(qvalues)
 
 # Join qvalues with anova results
-anova_results <- join_qvalues_with_ANOVA_results(qvalues)
+anova_results_without_interaction <- join_qvalues_with_ANOVA_results(anova_results_without_interaction)
 
-kable(anova_results %>%
+kable(anova_results_without_interaction %>%
         dplyr::filter(term != "Residuals") %>%
         group_by(term) %>%
         summarise(n = sum(qvalue < 0.05)),
       caption = "Number of significant qvalues.", format = "pandoc")
 
-kable(anova_results %>%
+kable(anova_results_without_interaction %>%
         dplyr::filter(term != "Residuals") %>%
         group_by(term) %>%
         summarise(n = sum(qvalue < 0.10)),
@@ -446,48 +474,449 @@ anova_results %>%
 There doesn't seem to be much difference between the results between the two
 packages, I will stick to using the `qvalue` package right now.
 
+# ANOVA, further results
+
+I want to explore all the data that the ANOVA outputs.
+
+```{r}
+adipose_anova_without_interaction[1, ] %>% 
+  dplyr::select(tidy_anova) %>%
+  unnest()
+
+adipose_anova_without_interaction[1, ] %>% 
+  dplyr::select(augment_anova) %>%
+  unnest()
+
+adipose_anova_without_interaction[1, ] %>% 
+  dplyr::select(glance_anova) %>%
+  unnest()
+```
+
+## Plotting example with RDH16
+```{r}
+rdh16_data <- adipose_imputed %>%
+  dplyr::filter(name == "RDH16")
+
+rdh16_data %>% 
+  ggplot(aes(genotype, LFQ, color = tissue)) +
+  geom_boxplot() 
+
+rdh16_data %>% 
+  ggplot(aes(genotype, LFQ)) +
+  geom_boxplot()
+
+rdh16_genotype_mean <- rdh16_data %>%
+  group_by(genotype) %>% 
+  summarise(mean = mean(LFQ))
+
+rdh16_data %>% 
+  ggplot() +
+  geom_point(aes(genotype, LFQ, color = tissue))+
+  geom_point(data = rdh16_genotype_mean, aes(genotype, mean))
+```
+
+### Linear model with RDH16 data
+
+```{r}
+rdh16_data <- rdh16_data %>% 
+  mutate(tissue = as_factor(tissue),
+         genotype = as_factor(genotype))
+
+rdh16_model <- lm(LFQ ~ genotype * tissue - 1,data = rdh16_data)
+rdh16_model <- lm(LFQ ~ genotype * tissue,data = rdh16_data, subset = genotype == "wt")
+
+rdh16_model <- lm(LFQ ~ genotype - 1, data = rdh16_data)
+rdh16_model
+rdh16_model$residuals
+summary(rdh16_model)
+tidy(rdh16_model)
+augment(rdh16_model)
+glance(rdh16_model)
+
+rdh16_data %>% 
+  gather_residuals(rdh16_model) %>% 
+  ggplot(aes(tissue, resid)) +
+  geom_boxplot()
+
+rdh16_model <- lm(LFQ ~ tissue - 1, data = rdh16_data)
+rdh16_model
+rdh16_model$residuals
+summary(rdh16_model)
+tidy(rdh16_model)
+augment(rdh16_model)
+glance(rdh16_model)
+
+rdh16_data %>% 
+  gather_residuals(rdh16_model) %>% 
+  ggplot(aes(genotype, resid)) +
+  geom_boxplot()
+```
+
+## Calculate mean
+
+```{r}
+adipose_means <- adipose_imputed %>% 
+  group_by(name, tissue, genotype) %>% 
+  summarise(
+    mean = mean(LFQ)
+  ) %>% 
+  unite(group, tissue, genotype, sep = "_") %>%
+  spread(key = "group", value = "mean") %>% 
+  mutate(sc_diff = sc_midy - sc_wt,
+         m_diff  = m_midy  - m_wt)
+
+adipose_means %>% 
+  ggplot(aes(m_wt, m_midy, color = sc_diff)) +
+  geom_point() +
+  scale_color_viridis_c()
+
+adipose_means %>% 
+  ggplot(aes(sc_diff, m_diff)) +
+  geom_point()
+
+tissue_means <- adipose_imputed %>% 
+  group_by(name, tissue) %>% 
+  summarise(
+    mean = mean(LFQ)
+  ) %>% 
+  spread(key = "tissue", value = "mean")
+
+genotype_means <- adipose_imputed %>% 
+  group_by(name, genotype) %>% 
+  summarise(
+    mean = mean(LFQ)
+  ) %>% 
+  spread(key = "genotype", value = "mean")
+
+# join mean tables
+adipose_means <- full_join(adipose_means[, 1:5], tissue_means, by = "name")
+adipose_means <- full_join(adipose_means, genotype_means, by = "name")
+
+
+  
+```
+
+## Volcano plots
+
+```{r}
+# Calculate lfc2 for each group
+adipose_lfc2 <- adipose_means %>% 
+  group_by(name) %>% 
+  mutate(tissue = m - sc,
+         genotype = midy - wt) %>%
+  dplyr::select(name, tissue, genotype) %>% 
+  gather(tissue, genotype, key = "term", value = "lfc2") # term is used for easy joining with anova results
+
+# Join with anova results
+anova_results_without_interaction <- full_join(anova_results_without_interaction, adipose_lfc2,
+                                               by = c("name", "term")) %>% 
+  rename(group = term)
+
+anova_results_without_interaction_for_volcano <- anova_results_without_interaction %>% 
+  mutate(enriched_1 = as.numeric(lfc2 > 0 & qvalue < 0.05),
+         enriched_2 = as.numeric(lfc2 < 0 & qvalue < 0.05),
+         significant_temp = (enriched_1 + enriched_2 * 2) + 1,
+         significant = case_when(group == "tissue" & significant_temp > 1 ~ significant_temp + 2,
+                                 group == "tissue" & significant_temp == 1 ~ significant_temp,
+                                 group == "genotype" ~ significant_temp),
+         significant = as.factor(significant))
+
+
+anova_results_without_interaction_for_volcano %>%
+  ggplot(aes(lfc2, -log10(p.value), color = significant)) +
+  geom_point() +
+  scale_color_manual("More abundant in:",
+                     values = c("black", "#00BFC4", "#F8666D", "#7CAE00", "#C77CFF"),
+                     breaks = c(2, 3, 4, 5),
+                     labels = c("MIDY", "WT", "Adipose, mesenterial", "Adipose, subcutaneous")) +
+  facet_grid(~ group, scales = "free_x") +
+  theme(panel.background = element_blank(),
+        axis.line = element_line("black"))
+```
+
+# Linear models
+
+
 # t-test
 
+Function for performing multiple t-tests.
+
 ```{r echo = FALSE}
-multiple_ttests <- function(tb, col_name) {
+multiple_ttests <- function(tb, col_name, equal_var = FALSE) {
   
   # Libraries
   library(tidyverse)
   library(broom)
   
-  # t-test
-  sym(col_name)
+  # Quote
+  col_name <- enquo(col_name)
   
-  t_test <-  tb %>%
-    dplyr::select(name, !!sym(col_name), LFQ) %>%
-    group_by(name, !!sym(col_name)) %>%
-    nest() %>%
-    spread(key = !!sym(col_name), value = data) %>%
+  # Calculate the mean for each protein
+  means <- tb %>%
     group_by(name) %>%
-    mutate(p_value = t.test(unlist(midy), unlist(wt))$p.value,
+    summarise(mean_total = mean(LFQ))
+  
+  
+  # ttest
+  t_test <-  tb %>%
+    dplyr::select(name, !!col_name, LFQ) %>%
+    group_by(name, !!col_name) %>%
+    nest() %>%
+    spread(key = !!col_name, value = data) %>%
+    group_by(name) %>%
+    mutate(p_value = t.test(unlist(midy), unlist(wt), var.equal = equal_var)$p.value,
            mean_midy = mean(unlist(midy)),
            mean_wt = mean(unlist(wt)),
            log2_difference = mean_midy - mean_wt)
+  
+  # Join data sets
+  t_test <- left_join(t_test, means, by = "name")
+  
   return(t_test)
 }
 ```
 
 ## Mesenterial
 
+First select mesenterial tissue.
+
+```{r}
+mesenterial_data <- adipose_imputed %>%
+  dplyr::filter(tissue == "m")
+```
+
+### t-test, mesenterial, unequal variance
+
 ```{r}
 # t_test for mesenterial tissue
-t_test_m <- multiple_ttests(adipose_imputed, "genotype")
+t_test_m <- multiple_ttests(mesenterial_data, genotype, equal_var = FALSE)
 ```
 
 ```{r}
-t_test_m %>%
-  ggplot(aes(x = p_value)) +
-  geom_histogram(breaks = seq(0, 1, 0.05), color = "black", fill = "white")
+plot_pvalue_histogram <- function(tb, col_name, limit_max, plot_title = "p-value histogram") {
+  
+  # Quote
+  col_name <- enquo(col_name)
+  
+  # pvalue plot
+  tb %>% 
+    ggplot(aes(x = !!col_name)) +
+    geom_histogram(breaks = seq(0, 1, 0.05), fill = "black", color = "white") +
+    xlab("p-value") +
+    ylab("Number of proteins") +
+    scale_y_continuous(limits = c(0, limit_max), expand = c(0, 0)) + 
+    labs(
+      title = plot_title
+    ) +
+    theme(panel.background = element_blank(),
+          axis.line = element_line(color = "black"))
+}
+```
+
+Plot p-value histogram.
+
+```{r}
+plot_pvalue_histogram(t_test_m, p_value, 150)
+```
+
+Use `qvalue` to calculate q-values.
+
+```{r}
+fdr_correction_with_qvalue <- function(tb, p_value_col) {
+  
+  # Quote
+  p_value_col <- enquo(p_value_col)
+  
+  # fdr correction
+  qvalues <- qvalue(as_vector(tb %>%
+                                ungroup() %>% # To make sure to only get one column
+                                dplyr::select(!!p_value_col)))
+  
+  return(qvalues)
+}
 ```
 
 ```{r}
-q_values_ttest_m <- qvalue(t_test_m$p_value)
-q_values_ttest_m <- tibble(p_value = q_values_ttest_m[["pvalues"]],
-                           q_value = q_values_ttest_m[["qvalues"]])
+q_values <- fdr_correction_with_qvalue(t_test_m, p_value)
+
+plot(q_values)
+hist(q_values)
+```
+
+```{r}
+join_qvalues_with_results <- function(tb, p_value_col = "p_value") {
+  
+  # Make a tibble with p and qvalues
+  q_values <- tibble(p_value = q_values[["pvalues"]], q_value = q_values[["qvalues"]])
+  
+  # Join with ANOVA results
+  tb <- full_join(tb, q_values, by = p_value_col)
+  
+  return(tb)
+}
+```
+
+```{r}
+t_test_m_unequal <- join_qvalues_with_results(t_test_m)
+```
+
+__MA plot__
+
+```{r}
+plot_MA_plot <- function(tb, plot_title = "MA plot") {
+  tb %>% 
+    ggplot(aes(mean_total, log2_difference)) +
+    geom_point() +
+    geom_hline(yintercept = 0, color = "red") +
+    xlab("Mean intensity") +
+    ylab("Log2 fold difference") +
+    labs(
+      title = plot_title
+    ) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line("black")) 
+}
+```
+
+```{r}
+plot_MA_plot(t_test_m_unequal)
+```
+
+__Volcano plot__
+
+```{r}
+plot_volcano_pvalue <- function(tb, label_1, label_2,
+                                plot_title = "Volcano plot") {
+  
+  # Volcano_plot
+  tb %>% 
+    mutate(
+      enriched_1 = as.numeric(log2_difference > 0.585 & p_value < 0.05),
+      enriched_2 = as.numeric(log2_difference < -0.585 & p_value < 0.05),
+      significant = as.factor((enriched_1 + enriched_2 * 2) + 1)
+    ) %>%
+    ggplot(aes(log2_difference, -log10(p_value), color = significant)) +
+    geom_hline(yintercept = -log10(0.05)) +
+    geom_vline(xintercept = log2(1.5)) +
+    geom_vline(xintercept = -log2(1.5)) +
+    geom_point() +
+    scale_color_manual("More abundant in:",
+                       values = c("black", "#00BFC4", "#F8666D"),
+                       breaks = c(2, 3),
+                       labels = c(label_1, label_2)
+    ) +
+    labs(
+      title = plot_title
+    ) +
+    xlab(bquote(~ log[2] ~ " fold change")) +
+    ylab(bquote("-" ~ log[10] ~ "(p-value)")) +
+    #  title = plot_title
+    # ) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line("black")
+    )
+}
+```
+
+```{r}
+t_test_m_unequal <- t_test_m_unequal %>%
+  mutate(enriched_midy = as.numeric(log2_difference > 0.585 & p_value < 0.05),
+         enriched_wt   = as.numeric(log2_difference < -0.585 & p_value < 0.05),
+         significant   = as.factor((enriched_midy + enriched_wt * 2) + 1))
+         
+
+kable(t_test_m_unequal %>%
+        ungroup() %>%
+        summarise(`Significnt in midy` = sum(log2_difference > 0.585 & p_value < 0.05),
+                  `Significant in wt`  = sum(log2_difference < -0.585 & p_value < 0.05)),
+      format = "pandoc", align = "c",
+      caption = "Significant proteins with log2 fold change < -0.585 or > 0.585 and p-value > 0.05")
+
+  # Volcano plot
+ t_test_m_unequal %>%
+  mutate(
+    enriched_midy = as.numeric(log2_difference > 0.585 & p_value < 0.05),
+    enriched_wt = as.numeric(log2_difference < -0.585 & p_value < 0.05),
+    significant = as.factor((enriched_midy + enriched_wt * 2) + 1)
+  ) %>%
+  ggplot(aes(log2_difference, -log10(p_value), color = significant)) +
+  geom_point() +
+  scale_color_manual("More abundant in:",
+    values = c("black", "#00BFC4", "#F8666D"),
+    breaks = c(2, 3),
+    labels = c("midy", "wt")
+  ) +
+  xlab(bquote(~ log[2] ~ " fold change")) +
+  ylab(bquote("-" ~ log[10] ~ "(p-value)")) +
+  #  title = plot_title
+  # ) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line("black")
+  )
+```
+
+
+```{r}
+plot_volcano <- function(tb, plot_title = "Volcano plot") {
+  tb %>% 
+    ggplot(aes(log2_difference, -log10(p_value))) +
+    geom_point() +
+    xlab("Log2 fold difference") +
+    ylab("-log10(p-value") +
+    labs(
+      title = plot_title
+    ) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line("black")) 
+}
+```
+
+```{r}
+plot_volcano(t_test_m_unequal)
+```
+
+
+### t-test, mesenterial, equal variance
+
+```{r}
+# t_test for mesenterial tissue
+t_test_m_equal <- multiple_ttests(mesenterial_data, genotype, equal_var = TRUE)
+```
+
+```{r}
+plot_pvalue_histogram(t_test_m_equal, p_value, 150)
+```
+
+Use `qvalue` to calculate q-values.
+
+
+```{r}
+q_values <- fdr_correction_with_qvalue(t_test_m_equal, p_value)
+
+plot(q_values)
+hist(q_values)
+```
+
+```{r}
+t_test_m_equal <- join_qvalues_with_results(t_test_m_equal)
+```
+
+### Subcutaneous
+
+First select subcutaneous tissue.
+
+```{r}
+sc_data <- adipose_imputed %>%
+  dplyr::filter(tissue == "sc")
+```
+
+### t-test, sc, unequal variance
+
+```{r}
+t_test_sc_unequal <- multiple_ttests(sc_data, genotype, equal_var = FALSE)
 ```
 
