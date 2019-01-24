@@ -20,6 +20,7 @@
 make_var_exp_kable <- function(tb, print_format) {
   
   library(knitr)
+  library(kableExtra)
   
   kable(
     tb, 
@@ -30,5 +31,6 @@ make_var_exp_kable <- function(tb, print_format) {
                   "Cumulative proportion explained"),
     align     = "c",
     caption   = "Proportion of the variance that each principal component explains"
-  )
+  ) %>% 
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
 }
