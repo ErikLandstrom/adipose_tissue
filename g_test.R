@@ -7,7 +7,7 @@
 
 # Performs a G-test to analyse if there are any significant differences in the
 # distribution of missing and observed values between the different sample groups.
-# Script is adapted from Webb-Robertson, 2010 "Combined Statistical Analyses of Peptide Intensities and Peptide
+# Script is adapted from Webb-Robertson, 2010, "Combined Statistical Analyses of Peptide Intensities and Peptide
 # Occurrences Improves Identification of Significant Peptides from
 # MS-Based Proteomics Data"
 
