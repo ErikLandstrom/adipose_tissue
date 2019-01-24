@@ -5,7 +5,7 @@
 
 # Description -------------------------------------------------------------
 
-# Takes an output file (wide tibble) from DEP (Maxquant) and converts it to lon
+# Takes an output file (wide tibble) from DEP (Maxquant) and converts it to long
 # format. Additionally calculates the number of observed proteins per sample
 # group and creates a new tibble, and then replaces observed values (not NA) 
 # with the gene name and saves output in a new tibble.
