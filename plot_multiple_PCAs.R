@@ -37,8 +37,8 @@ plot_multiple_PCAs <- function(tb, pc_start, pc_end) {
                                 label.label  = "sample",
                                 label.repel  = TRUE,
                                 label.colour = "black") +
-      geom_hline(yintercept = 0, linetype = "dashed") +
-      geom_vline(xintercept = 0, linetype = "dashed") +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "grey") +
+      geom_vline(xintercept = 0, linetype = "dashed", color = "grey") +
       theme(plot.title = element_text(hjust = 0.5),
             panel.background = element_blank(),
             panel.grid = element_blank(),
