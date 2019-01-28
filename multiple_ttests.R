@@ -13,9 +13,13 @@
 
 # Arguments ---------------------------------------------------------------
 
-# tb = tidy tibble in long format
+# tb        = tidy tibble in long format
 # group_var = column name of the variable of interest, unquoted
-# values = column name of observations
+# group_1   = name of group 1, unquoted
+# group_2   = name of group 2, unquoted
+# mean_1    = name of mean column for group_1
+# mean_2    = name of mean column for group_2
+# values    = column name of observations
 # equal_var = logical, if equal variance should be assumed
 
 # Function ----------------------------------------------------------------
