@@ -11,19 +11,19 @@
 
 # Arguments ---------------------------------------------------------------
 
-# tb = output from fdr_correction_with_qvalue.R
-
+# tb = output from multiple_ttests.R
+# tb2 = output from fdr_correction_with_qvalue.R
 
 
 # Function ----------------------------------------------------------------
 
-join_qvalues_with_results <- function(tb, p_value_col = "p_value") {
+join_qvalues_with_results <- function(tb, tb2, p_value_col = "p_value") {
   
   # Make a tibble with p and qvalues
-  qvalues <- tibble(p_value = qvalues[["pvalues"]], qvalue = qvalues[["qvalues"]])
+  qvalues <- tibble(p_value = tb2[["pvalues"]], qvalue = tb2[["qvalues"]])
   
   # Join with ANOVA results
-  tb <- full_join(tb, qvalues, by = p_value_col)
+  data <- full_join(tb, qvalues, by = p_value_col)
   
-  return(tb)
+  return(data)
 }
