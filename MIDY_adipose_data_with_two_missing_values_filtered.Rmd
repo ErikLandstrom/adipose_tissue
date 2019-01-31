@@ -351,55 +351,7 @@ kable(anova_results %>%
 
 ```
 
-## Tukey results
 
-```{r eval = FALSE}
-tukey_results <- adipose_anova %>%
-  unnest(tidy_tukey)
-```
-
-# 2-way ANOVA without interaction effects
-
-Since there doesn't seem to be many interaction effect, I want to see what 
-will happen if you do an ANOVA without the interaction effect between genotype
-and tissue.
-
-```{r echo = FALSE}
-multiple_2way_anova_in_tidyverse_with_no_interaction <- function(tb) {
-  
-  # Libraries
-  library(tidyverse)
-  library(broom)
-  
-  # 2-way ANOVA
-  anova <- tb %>%
-    group_by(name) %>%
-    nest() %>%
-    mutate(anova = map(data, ~ aov(LFQ ~ genotype + tissue, data = .x)),
-           tidy_anova = map(anova, tidy),
-           augment_anova = map(anova, augment),
-           glance_anova = map(anova, glance))
-  
-  return(anova)
-}
-```
-
-```{r no_interaction1}
-# Perform ANOVA without interaction effect
-adipose_anova_without_interaction <- multiple_2way_anova_in_tidyverse_with_no_interaction(adipose_imputed)
-
-# Extract p-values and more
-anova_results_without_interaction <- adipose_anova_without_interaction %>%
-  unnest(tidy_anova) %>% 
-  dplyr::filter(term != "Residuals")
-
-# Count number of significant p-values and print a kable
-make_significant_ANOVA_kable(anova_results_without_interaction)
-
-# Plot pvalue histograms for each factor
-plot_pvalue_histogram_ANOVA(anova_results_without_interaction, p.value, 750)
-
-```
 
 The p-value histograms doesn't look much different, but with fewer p-values to
 correct maybe more q-values will be significant.
@@ -591,9 +543,6 @@ genotype_means <- adipose_imputed %>%
 # join mean tables
 adipose_means <- full_join(adipose_means[, 1:5], tissue_means, by = "name")
 adipose_means <- full_join(adipose_means, genotype_means, by = "name")
-
-
-  
 ```
 
 ## Volcano plots

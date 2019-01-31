@@ -1,8 +1,8 @@
 ---
 title: "MIDY adipose tissue - first analysis"
 output: 
-  BiocStyle::html_document:
-    toc_float: true
+  html_document:
+    keep_md: TRUE
 ---
 
 
@@ -194,7 +194,7 @@ plot_frequency(data_se)
 strict_filter <- filter_missval(data_se, thr = 0)
 filter_missval(data_se, thr = 1)
 filter_missval(data_se, thr = 2)
-data_2_valid_values <- filter_missval(data_se, thr = 3)
+filter_missval(data_se, thr = 3)
 ```
 
 ```{r}

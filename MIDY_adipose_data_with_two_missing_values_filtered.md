@@ -15,18 +15,6 @@ output:
 ```r
 library(tidyverse)
 library(DEP)
-```
-
-```
-## Warning in fun(libname, pkgname): mzR has been built against a different Rcpp version (0.12.16)
-## than is installed on your system (1.0.0). This might lead to errors
-## when loading mzR. If you encounter such issues, please send a report,
-## including the output of sessionInfo() to the Bioc support forum at 
-## https://support.bioconductor.org/. For details see also
-## https://github.com/sneumann/mzR/wiki/mzR-Rcpp-compiler-linker-issue.
-```
-
-```r
 library(conflicted)
 library(biomaRt)
 library(naniar)
@@ -304,6 +292,83 @@ adipose_imputed <- adipose_imputed %>%
   rename(LFQ = intensity)
 ```
 
+## Calculate mean
+
+
+```r
+adipose_means <- adipose_imputed %>% 
+  group_by(name, tissue, genotype) %>% 
+  summarise(
+    mean = mean(LFQ)
+  ) %>% 
+  unite(group, tissue, genotype, sep = "_") %>%
+  spread(key = "group", value = "mean") %>% 
+  mutate(sc_diff = sc_midy - sc_wt)
+
+adipose_means %>% 
+  ggplot(aes(m_wt, m_midy, color = sc_diff)) +
+  geom_point() +
+  scale_color_viridis_c()
+```
+
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-9-1.png)<!-- -->
+
+```r
+adipose_imputed %>% 
+  group_by(name, tissue) %>% 
+  summarise(
+    mean = mean(LFQ)
+  ) %>% 
+  spread(key = "tissue", value = "mean")
+```
+
+```
+## # A tibble: 1,959 x 3
+## # Groups:   name [1,959]
+##    name        m    sc
+##    <chr>   <dbl> <dbl>
+##  1 A1BG     30.3  30.4
+##  2 A2M      32.6  31.8
+##  3 AACS     25.9  25.0
+##  4 ABCA9    23.4  24.1
+##  5 ABHD14B  28.4  28.3
+##  6 ABHD5    24.2  24.6
+##  7 ABI3BP   25.4  28.7
+##  8 ABLIM1   23.1  23.5
+##  9 ACAA1    28.9  28.1
+## 10 ACAA2    27.7  27.5
+## # ... with 1,949 more rows
+```
+
+```r
+adipose_imputed %>% 
+  group_by(name, genotype) %>% 
+  summarise(
+    mean = mean(LFQ)
+  ) %>% 
+  spread(key = "genotype", value = "mean")
+```
+
+```
+## # A tibble: 1,959 x 3
+## # Groups:   name [1,959]
+##    name     midy    wt
+##    <chr>   <dbl> <dbl>
+##  1 A1BG     30.2  30.5
+##  2 A2M      32.2  32.3
+##  3 AACS     26.1  24.8
+##  4 ABCA9    23.9  23.6
+##  5 ABHD14B  28.4  28.3
+##  6 ABHD5    24.7  24.2
+##  7 ABI3BP   27.0  27.1
+##  8 ABLIM1   23.1  23.5
+##  9 ACAA1    28.7  28.3
+## 10 ACAA2    27.8  27.4
+## # ... with 1,949 more rows
+```
+
+
+
 # 2-way ANOVA
 
 Perform a 2-way ANOVA on the imputed dataset.
@@ -312,7 +377,7 @@ Perform a 2-way ANOVA on the imputed dataset.
 
 
 ```r
-adipose_anova <- multiple_2way_anova_in_tidyverse_with_tukeyHSD(adipose_imputed)
+adipose_anova <- multiple_2way_anova_in_tidyverse_with_tukeyHSD(adipose_imputed, name, "LFQ", "genotype", "tissue")
 ```
 
 Unnest anova list-column.
@@ -326,6 +391,27 @@ anova_results <- adipose_anova %>%
   unnest(tidy_anova) %>% 
   dplyr::filter(term != "Residuals")
 
+anova_results
+```
+
+```
+## # A tibble: 5,877 x 7
+##    name  term               df     sumsq    meansq statistic  p.value
+##    <chr> <chr>           <dbl>     <dbl>     <dbl>     <dbl>    <dbl>
+##  1 A1BG  genotype            1 0.297     0.297      2.24     0.154   
+##  2 A1BG  tissue              1 0.124     0.124      0.931    0.349   
+##  3 A1BG  genotype:tissue     1 0.0000599 0.0000599  0.000451 0.983   
+##  4 A2M   genotype            1 0.113     0.113      0.921    0.352   
+##  5 A2M   tissue              1 3.08      3.08      25.1      0.000129
+##  6 A2M   genotype:tissue     1 0.138     0.138      1.12     0.305   
+##  7 AACS  genotype            1 7.93      7.93       3.76     0.0704  
+##  8 AACS  tissue              1 4.05      4.05       1.92     0.185   
+##  9 AACS  genotype:tissue     1 2.01      2.01       0.952    0.344   
+## 10 ABCA9 genotype            1 0.475     0.475      1.12     0.305   
+## # ... with 5,867 more rows
+```
+
+```r
 # Count number of significant p-values
 make_significant_ANOVA_kable(anova_results)
 ```
@@ -336,13 +422,13 @@ Table: Number of significant differences per factor.
 
       term           n  
 -----------------  -----
-    genotype        180 
- genotype:tissue    105 
-     tissue         684 
+    genotype        186 
+ genotype:tissue    101 
+     tissue         689 
 
 ```r
 # Plot pvalue histograms for each factor
-plot_pvalue_histogram_ANOVA(anova_results, 750)
+plot_pvalue_histogram_ANOVA(anova_results, p.value, 750)
 ```
 
 ![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/anova_results-1.png)<!-- -->
@@ -350,27 +436,33 @@ plot_pvalue_histogram_ANOVA(anova_results, 750)
 
 ```r
 # Function
-fdr_correction_with_qvalue <- function(tb) {
+fdr_correction_with_qvalue <- function(tb, p_value_col) {
+  
+  # Quote
+  p_value_col <- enquo(p_value_col)
+  
+  # fdr correction
   qvalues <- qvalue(as_vector(tb %>%
-                                dplyr::select(p.value)))
-
+                                ungroup() %>% # To make sure to only get one column
+                                dplyr::select(!!p_value_col)))
+  
   return(qvalues)
 }
 
 # fdr correction with the qvalue package
-qvalues <- fdr_correction_with_qvalue(anova_results)
+qvalues <- fdr_correction_with_qvalue(anova_results, p.value)
 
 # Plot fdr statistics
 plot(qvalues)
 ```
 
-![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-11-1.png)<!-- -->
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-12-1.png)<!-- -->
 
 ```r
 hist(qvalues)
 ```
 
-![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-11-2.png)<!-- -->
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-12-2.png)<!-- -->
 
 ```r
 # Function
@@ -397,9 +489,9 @@ Table: Number of significant qvalues.
 
 term                 n
 ----------------  ----
-genotype            31
-genotype:tissue      9
-tissue             342
+genotype            34
+genotype:tissue      5
+tissue             338
 
 ```r
 kable(anova_results %>%
@@ -415,9 +507,9 @@ Table: Number of significant q-values.
 
 term                 n
 ----------------  ----
-genotype            72
-genotype:tissue     29
-tissue             463
+genotype            67
+genotype:tissue     24
+tissue             448
 
 ## Tukey results
 
@@ -455,12 +547,12 @@ Table: Number of significant differences per factor.
 
    term       n  
 ----------  -----
- genotype    180 
-  tissue     684 
+ genotype    187 
+  tissue     690 
 
 ```r
 # Plot pvalue histograms for each factor
-plot_pvalue_histogram_ANOVA(anova_results, 750)
+plot_pvalue_histogram_ANOVA(anova_results, p.value, 750)
 ```
 
 ![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/no_interaction1-1.png)<!-- -->
@@ -471,7 +563,7 @@ correct maybe more q-values will be significant.
 
 ```r
 # fdr correction with the qvalue package
-qvalues <- fdr_correction_with_qvalue(anova_results)
+qvalues <- fdr_correction_with_qvalue(anova_results, p.value)
 
 # Plot fdr statistics
 plot(qvalues)
@@ -502,8 +594,8 @@ Table: Number of significant qvalues.
 
 term          n
 ---------  ----
-genotype     59
-tissue      429
+genotype     52
+tissue      423
 
 ```r
 kable(anova_results %>%
@@ -519,8 +611,8 @@ Table: Number of significant q-values.
 
 term          n
 ---------  ----
-genotype    124
-tissue      581
+genotype    120
+tissue      578
 
 When using no interaction more q-values are deemed significant than when an
 interaction factor is used.
@@ -548,7 +640,7 @@ fdr_qvalues <- fdrtool(as_vector(anova_results %>%
 ## Step 5... prepare for plotting
 ```
 
-![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-14-1.png)<!-- -->
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-15-1.png)<!-- -->
 
 ```r
 # Create a tibble with pvalues and qvalues
@@ -577,8 +669,8 @@ Table: Number of significant qvalues at < 0.05.
 
    term      n_fdrtool    n_qvalue 
 ----------  -----------  ----------
- genotype       55           59    
-  tissue        418         429    
+ genotype       49           52    
+  tissue        422         423    
 
 ```r
 # Plot qvalues from the two fdr packages to see correlation
@@ -589,36 +681,233 @@ anova_results %>%
   facet_wrap(~ term)
 ```
 
-![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-14-2.png)<!-- -->
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-15-2.png)<!-- -->
 
 There doesn't seem to be much difference between the results between the two
 packages, I will stick to using the `qvalue` package right now.
 
 # t-test
 
+Function for performing multiple t-tests.
+
 
 
 ## Mesenterial
 
+First select mesenterial tissue.
+
+
+```r
+mesenterial_data <- adipose_imputed %>%
+  dplyr::filter(tissue == "m")
+```
+
+### t-test, mesenterial, unequal variance
+
 
 ```r
 # t_test for mesenterial tissue
-t_test_m <- multiple_ttests(adipose_imputed, "genotype")
+t_test_m <- multiple_ttests(mesenterial_data, genotype, equal_var = FALSE)
 ```
 
 
 ```r
-t_test_m %>%
-  ggplot(aes(x = p_value)) +
-  geom_histogram(breaks = seq(0, 1, 0.05), color = "black", fill = "white")
+plot_pvalue_histogram <- function(tb, col_name, limit_max, plot_title = "p-value histogram") {
+  
+  # Quote
+  col_name <- enquo(col_name)
+  
+  # pvalue plot
+  tb %>% 
+    ggplot(aes(x = !!col_name)) +
+    geom_histogram(breaks = seq(0, 1, 0.05), fill = "black", color = "white") +
+    xlab("p-value") +
+    ylab("Number of proteins") +
+    scale_y_continuous(limits = c(0, limit_max), expand = c(0, 0)) + 
+    labs(
+      title = plot_title
+    ) +
+    theme(panel.background = element_blank(),
+          axis.line = element_line(color = "black"))
+}
 ```
 
-![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-17-1.png)<!-- -->
+Plot p-value histogram.
 
 
 ```r
-q_values_ttest_m <- qvalue(t_test_m$p_value)
-q_values_ttest_m <- tibble(p_value = q_values_ttest_m[["pvalues"]],
-                           q_value = q_values_ttest_m[["qvalues"]])
+plot_pvalue_histogram(t_test_m, p_value, 150)
+```
+
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-20-1.png)<!-- -->
+
+Use `qvalue` to calculate q-values.
+
+
+```r
+fdr_correction_with_qvalue <- function(tb, p_value_col) {
+  
+  # Quote
+  p_value_col <- enquo(p_value_col)
+  
+  # fdr correction
+  qvalues <- qvalue(as_vector(tb %>%
+                                ungroup() %>% # To make sure to only get one column
+                                dplyr::select(!!p_value_col)))
+  
+  return(qvalues)
+}
+```
+
+
+```r
+q_values <- fdr_correction_with_qvalue(t_test_m, p_value)
+
+plot(q_values)
+```
+
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-22-1.png)<!-- -->
+
+```r
+hist(q_values)
+```
+
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-22-2.png)<!-- -->
+
+
+```r
+join_qvalues_with_results <- function(tb, p_value_col = "p_value") {
+  
+  # Make a tibble with p and qvalues
+  q_values <- tibble(p_value = q_values[["pvalues"]], q_value = q_values[["qvalues"]])
+  
+  # Join with ANOVA results
+  tb <- full_join(tb, q_values, by = p_value_col)
+  
+  return(tb)
+}
+```
+
+
+```r
+t_test_m_unequal <- join_qvalues_with_results(t_test_m)
+```
+
+__MA plot__
+
+
+```r
+plot_MA_plot <- function(tb, plot_title = "MA plot") {
+  tb %>% 
+    ggplot(aes(mean_total, log2_difference)) +
+    geom_point() +
+    geom_hline(yintercept = 0, color = "red") +
+    xlab("Mean intensity") +
+    ylab("Log2 fold difference") +
+    labs(
+      title = plot_title
+    ) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line("black")) 
+}
+```
+
+
+```r
+plot_MA_plot(t_test_m_unequal)
+```
+
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-26-1.png)<!-- -->
+
+__Volcano plot__
+
+
+```r
+plot_volcano <- function(tb, plot_title = "Volcano plot") {
+  tb %>% 
+    ggplot(aes(log2_difference, -log10(p_value))) +
+    geom_point() +
+    xlab("Log2 fold difference") +
+    ylab("-log10(p-value") +
+    labs(
+      title = plot_title
+    ) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line("black")) 
+}
+```
+
+
+```r
+plot_volcano(t_test_m_unequal)
+```
+
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-28-1.png)<!-- -->
+
+
+### t-test, mesenterial, equal variance
+
+
+```r
+# t_test for mesenterial tissue
+t_test_m_equal <- multiple_ttests(mesenterial_data, genotype, equal_var = TRUE)
+```
+
+
+```r
+plot_pvalue_histogram(t_test_m_equal, p_value, 150)
+```
+
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-30-1.png)<!-- -->
+
+Use `qvalue` to calculate q-values.
+
+
+
+```r
+q_values <- fdr_correction_with_qvalue(t_test_m_equal, p_value)
+
+plot(q_values)
+```
+
+```
+## geom_path: Each group consists of only one observation. Do you need to
+## adjust the group aesthetic?
+## geom_path: Each group consists of only one observation. Do you need to
+## adjust the group aesthetic?
+## geom_path: Each group consists of only one observation. Do you need to
+## adjust the group aesthetic?
+```
+
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-31-1.png)<!-- -->
+
+```r
+hist(q_values)
+```
+
+![](MIDY_adipose_data_with_two_missing_values_filtered_files/figure-html/unnamed-chunk-31-2.png)<!-- -->
+
+
+```r
+t_test_m_equal <- join_qvalues_with_results(t_test_m_equal)
+```
+
+### Subcutaneous
+
+First select subcutaneous tissue.
+
+
+```r
+sc_data <- adipose_imputed %>%
+  dplyr::filter(tissue == "sc")
+```
+
+### t-test, sc, unequal variance
+
+
+```r
+t_test_sc_unequal <- multiple_ttests(sc_data, genotype, equal_var = FALSE)
 ```
 
