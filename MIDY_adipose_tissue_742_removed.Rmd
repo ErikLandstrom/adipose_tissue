@@ -1,0 +1,1848 @@
+---
+title: "MIDY adipose tissue - 742 removed"
+author: "Erik Ländström"
+date: "21 January 2019"
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    keep_md: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r message = FALSE}
+library(tidyverse)
+library(DEP)
+library(conflicted)
+library(biomaRt)
+library(naniar)
+library(knitr)
+library(kableExtra)
+library(readxl)
+library(gridExtra)
+library(visdat)
+library(qvalue)
+library(ggfortify)
+library(broom)
+library(pheatmap)
+library(modelr)
+```
+
+# 1. Preprocessing
+
+## 1.1 Read rawdata from Maxquant
+
+```{r, echo = FALSE}
+make_tibble_for_DEP <- function(file = "proteinGroups.txt") {
+  # Library 
+  library(tidyverse)
+  
+  # Read file
+  data_raw <- read_tsv(file)
+  
+  # Extract LFQ column names
+  lfq_col_names <- str_extract(colnames(data_raw), "LFQ.+")
+  lfq_col_names <- lfq_col_names[which(!is.na(lfq_col_names))]
+  
+  data_raw <<- data_raw %>%
+    dplyr::select(`Protein IDs`, `Majority protein IDs`,
+                  `Fasta headers`, Peptides, 
+                  `Razor + unique peptides`, `Unique peptides`, 
+                  lfq_col_names,
+                  `Only identified by site`, `Reverse`,
+                  `Potential contaminant`)
+}
+```
+
+```{r message = FALSE}
+make_tibble_for_DEP("proteinGroups.txt")
+```
+
+Remove sample 742 since it has a insulinoma tumor.
+
+```{r}
+# The column names containing 742
+str_extract(colnames(data_raw), ".+742.+") 
+
+# Remove columns with data from sample 742
+data_raw <- data_raw %>% 
+  dplyr::select(-`LFQ intensity 742_m_midy`, -`LFQ intensity 742_sc_midy`)
+```
+
+## 1.2 Remove contaminant and reverse hits
+
+Calculate number of contaminants and reverse hits.
+
+```{r}
+data_raw %>%
+  summarise(n_reverse = length(Reverse) - sum(is.na(Reverse)),
+            n_contaminant = length(Reverse) - sum(is.na(`Potential contaminant`)))
+```
+
+```{r}
+remove_contaminants_and_reverse_hits <- function(tb) {
+  data_raw <<- tb %>%
+    dplyr::filter(is.na(`Potential contaminant`)) %>%
+    dplyr::filter(is.na(Reverse))
+}
+```
+
+```{r}
+remove_contaminants_and_reverse_hits(data_raw)
+dim(data_raw)
+```
+
+## 1.3 Add gene names from BiomaRt
+
+```{r scripts}
+# Remove isoform from refseq identifier
+data_raw <- data_raw %>%
+  mutate(Protein_ID = str_extract(`Majority protein IDs`, "NP_[0-9]+|XP_[0-9]+"))
+```
+
+Extract gene names from biomart.
+
+```{r}
+convert_NCBIIDs_to_gene_names <- function(tb) {
+  
+  # Load sus scrofa dataset from biomaRt and change column name to Protein_ID
+  ensembl <- useMart("ensembl", dataset = "sscrofa_gene_ensembl")  
+  
+  # Get gene names for peptide IDs
+  NP <- as_tibble(getBM(attributes = c("refseq_peptide", "external_gene_name"),
+              filters = "refseq_peptide",
+              values = tb,
+              mart = ensembl
+              ))
+  
+  NP <- NP %>%
+    rename(Protein_ID = refseq_peptide)
+  
+  # Load sus scrofa dataset from biomaRt and change column name to Protein_ID
+  XP <- as.tibble(getBM(attributes = c("refseq_peptide_predicted", "external_gene_name"),
+              filters = "refseq_peptide_predicted",
+              values = tb,
+              mart = ensembl
+              ))
+  
+  XP <- XP %>%
+    rename(Protein_ID = refseq_peptide_predicted)
+  
+  # Use full_join to join the two tables
+  gene_names <- full_join(NP, XP, by = "Protein_ID")
+  
+  # Tidy data, gene names in one column and remove NAs
+  gene_names <- gene_names %>%
+    gather(external_gene_name.x, external_gene_name.y, key = "Source", value = "Gene_name") %>%
+    dplyr::select(Protein_ID, Gene_name) %>%
+    dplyr::filter(!is.na(Gene_name)) 
+  
+  # If there are any "" artifacts from the biomaRt search, replace them with NA
+  gene_names[gene_names == ""] <- NA
+  
+  # Save output in a tibble
+  gene_names <<- gene_names
+}
+
+convert_NCBIIDs_to_gene_names(data_raw$Protein_ID)
+```
+
+Join gene names with raw data by using protein IDs as identifiers.
+
+```{r join_genenames}
+data <- full_join(data_raw, gene_names, by = "Protein_ID")
+```
+
+Check if there are any duplicated gene names and identifiers.
+
+```{r unique}
+# gene names
+data$Gene_name %>% duplicated() %>% any()
+
+# identifiers
+data$Protein_ID %>% duplicated() %>% any()
+```
+
+Duplicated gene names were found in the data.
+
+```{r unique2}
+# Number of NA gene names
+data %>%
+  summarise(sum(is.na(Gene_name)))
+
+# Count number of instances a gene name appears
+data %>%
+  group_by(Gene_name) %>%
+  summarise(n = n()) %>%
+  dplyr::filter(n > 1) %>%
+  arrange()
+
+# Make unique "row names", either gene name or identifier
+data_unique <- make_unique(data, "Gene_name", "Protein_ID")
+
+# Check if there are any duplicated IDs
+data_unique %>%
+  dplyr::select(name, ID) %>% 
+  duplicated() %>%
+  any()
+```
+
+```{r SExperiment}
+# Grep for lfq columns
+lfq_columns <- grep("LFQ.", colnames(data_unique))
+
+# Read experimental design
+experimental_design <- read_xlsx("MIDY_adipose_experimental_design.xlsx")
+experimental_design
+
+# Remove 742 samples from experimental design
+experimental_design <- experimental_design %>% 
+  dplyr::filter(replicate != 742)
+
+# Generate summarized experiment
+data_se <- make_se(data_unique, lfq_columns, experimental_design)
+
+data_se
+```
+
+## Extract protein name from fasta headers
+
+```{r}
+protein_names <- data_unique %>% 
+  dplyr::select(name, `Fasta headers`) %>% 
+  rename(protein_name = `Fasta headers`)
+
+# Extract the protein names from fasta headers
+protein_names <- protein_names %>% 
+  mutate(protein_name = str_extract(protein_name, "^[^\\[]+"))
+```
+
+
+# 2. Analysis
+
+## 2.1 Missing value filtering
+
+Plot protein identification overlap plot.
+
+```{r frequency}
+plot_frequency(data_se)
+```
+
+I think there are quite a few protein that have been identified in 0 samples, 
+since I removed two samples (742).
+
+```{r, echo = FALSE}
+g_test <- function (tb) {
+  # Library
+  library(tidyverse)
+  library(naniar)
+  
+  # Make long format tibble
+  original_data_long <- tb %>%
+    gather(m_wt_736:sc_wt_745, key = "Sample", value = "LFQ") %>%
+    separate(col = "Sample", into = c("tissue", "genotype", "sample"), sep = "_") %>%
+    unite(group, tissue, genotype) %>%
+    dplyr::select(name, group, sample, LFQ, everything())
+  
+  # Make nabular tibble
+  original_data_long_nab <- nabular(original_data_long)
+  
+  # Count number of samples
+  n <- n_distinct(original_data_long_nab$sample) * 2 # Should change this in the future
+  
+  # Count number of groups
+  n_groups <- as.integer(original_data_long_nab %>%
+    summarise(n_groups = n_distinct(group)))
+  
+  # Count number of samples per group
+  samples_per_group <- original_data_long_nab %>%
+                                   group_by(group) %>%
+                                   summarise(n_distinct(sample))
+  
+  # Calculates expected values for each peptide and sample group, and
+  # each term for the G-test
+  count_matrix <- original_data_long_nab %>%
+    group_by(name, group) %>%
+    summarise(missing = sum(is.na(LFQ)), # Number of missing values per group and protein
+              observed = sum(!is.na(LFQ))) %>% # Number of observed values per group and protein
+    ungroup() %>%
+    group_by(name) %>%
+    mutate(total_missing = sum(missing), # Calculates the number of missing values per protein (total, regardless of sample group)
+           total_observed = sum(observed)) %>% # Calculates the number of missing values per protein (total, regardless of sampel group)
+    group_by(group) %>%
+    mutate(samples_per_group = missing + observed, # Total number of samples per group
+           expected_missing = (total_missing * samples_per_group) / n, # Calculates the expected number of missing values per protein and group by random chance
+           expected_observed = (total_observed * samples_per_group) / n, # Calculates the expected number of observed values per protein and group by random chance
+           missing_term = missing * log(missing / expected_missing), # Calculates the G-test missing term for each protein
+           observed_term = observed * log(observed / expected_observed)) # Calculates the G-test observed term for each protein
+    
+  # Perform G-test
+  g_test <- count_matrix %>%
+    group_by(name, group) %>%
+    summarise(gtest_sample_term = sum(missing_term, observed_term, na.rm = TRUE),
+              missing = missing,
+              observed = observed) %>% # Calculates the "g-value" for each sample group
+    ungroup() %>%
+    group_by(name) %>%
+    summarise(g_value = 2 * sum(gtest_sample_term)) %>% # Calculates the g-value for each protein
+    group_by(name) %>%
+    mutate(gtest_pvalue = 1 - pchisq(g_value, n_groups - 1))
+  
+  # Join g_test with number of observed values per group
+  g_test <<- full_join(g_test, 
+            count_matrix %>%
+              dplyr::select(name, group, observed) %>%
+              spread(key = "group", value = observed),
+            by = "name")
+}
+```
+
+```{r}
+data_unfiltered <- get_df_wide(data_se)
+
+g_test(data_unfiltered)
+```
+
+I filtered for three missing values before and from the g-test, I will try with
+bought 2 and 3 missing values.
+
+Since it's not possible to filter on identified values in `DEP`, I will use the
+values from the g-test.
+
+```{r}
+# Filter for 2 valid values
+filtered_names_2_vv <- g_test %>%
+  dplyr::filter(m_midy >= 2 | m_wt >= 2 | sc_midy >= 2 | sc_wt >= 2) %>% 
+  dplyr::select(name)
+
+# Join with data_unique
+data_filtered <- left_join(filtered_names_2_vv, data_unique, by = "name")
+
+# Make a summarized experiment
+lfq_columns <- grep("LFQ.", colnames(data_filtered))
+data_se <- make_se(data_filtered, lfq_columns, experimental_design)
+```
+
+
+```{r}
+plot_missval(data_se)
+```
+
+```{r}
+plot_detect(data_se)
+```
+
+```{r}
+plot_numbers(data_se)
+```
+
+```{r}
+plot_coverage(data_se)
+```
+
+## 2.2 Normalization
+
+```{r}
+data_norm <- normalize_vsn(data_se)
+meanSdPlot(data_se)$gg + ggtitle("2 valid values")
+meanSdPlot(data_norm)$gg + ggtitle("2 valid values normalized")
+```
+
+```{r}
+p1 <- plot_normalization(data_se)
+p2 <- plot_normalization(data_norm)
+grid.arrange(p1, p2)
+
+plot_normalization(data_se)
+plot_normalization(data_norm)
+```
+
+```{r impute}
+# Imputation
+imputed_data <- impute(data_norm, fun = "man", shift = 1.8, scale = 0.3)
+```
+
+```{r}
+plot_imputation(data_norm, imputed_data)
+```
+
+## 2.3 Save normalized data
+Save normalized data as tibble for further analysis with `naniar` and more.
+
+```{r}
+# Save unfiltered data that has been run through DEP
+dep_data_unmodified_wide <- get_df_wide(data_se)
+
+write_tsv(dep_data_unmodified_wide, "MIDY_adipose_no742_filtered_prots_190121.txt")
+```
+
+
+```{r}
+# Save imputed data in a tibble
+adipose_imputed <- get_df_long(imputed_data)
+
+# Tidy up the condition column
+adipose_imputed <- adipose_imputed %>%
+  separate(condition, into = c("tissue", "genotype"), sep = "_") %>%
+  rename(LFQ = intensity)
+```
+
+## 2.4 Venn diagram
+
+Create matrix for plotting venn diagram.
+
+```{r, echo = FALSE}
+create_long_observed_matrix_tibbles <- function(tb) {
+  # Library
+  library(tidyverse)
+  
+  # Generate a long tibble
+  original_data_long <<- tb %>%
+    gather(m_wt_736:sc_wt_745, key = "Sample", value = "Intensity") %>%
+    separate(col = "Sample", into = c("tissue", "genotype", "sample"), sep = "_")
+  
+  # Calculate number of times there is a LFQ intensity per group
+  original_data_observed_matrix <<- original_data_long %>%
+    group_by(tissue, genotype, name) %>%
+    summarise(n = sum(!is.na(Intensity))) %>%
+    replace_with_na(replace = list(n = 0)) %>%
+    unite(group, tissue, genotype) %>%
+    spread(key = group, value = n)
+  
+  # Replaces observed values with gene name
+  original_data_name_matrix <<- original_data_observed_matrix %>%
+    group_by(name) %>%
+    mutate(m_midy = ifelse(m_midy > 0, name),
+           m_wt = ifelse(m_wt > 0, name),
+           sc_midy = ifelse(sc_midy > 0, name),
+           sc_wt = ifelse(sc_wt > 0, name))
+}
+
+plot_venn_diagram <- function(tb, file, title_text) {
+  # Libraries
+  library(VennDiagram)
+  library(tidyverse)
+  
+  venn.diagram(list(
+    m_midy  = as_vector(tb$m_midy),
+    m_wt    = as_vector(tb$m_wt),
+    sc_midy = as_vector(tb$sc_midy),
+    sc_wt   = as_vector(tb$sc_wt)
+  ),
+  filename = file, na = "remove",
+  fill = c("red", "green", "blue", "yellow"),
+  width = 4100,
+  main = title_text,
+  category.names = c("Mesenterial MIDY", "Mesenterial WT", "Subcutaneous MIDY", "Subcutaneous WT"))
+}
+```
+
+```{r}
+create_long_observed_matrix_tibbles(dep_data_unmodified_wide)
+plot_venn_diagram(original_data_name_matrix, "190122_MIDY_adipose_no742_venn_diagram.tiff", "MIDY adipose tissue (without 742) with 2 valid values")
+```
+![](190122_MIDY_adipose_no742_venn_diagram.tiff)
+
+## 2.5 PCA
+
+```{r wide}
+# Get wide imputed tibble
+wide_imputed_tibble <- get_df_wide(imputed_data)
+```
+
+```{r pca_func, echo = FALSE}
+format_data_for_PCA <- function(tb, num_samples, variables) {
+  # Read gene name and intensity data from get_df_wide(data_se)
+  temp <- tb[, 1:(1 + num_samples)]
+  
+  # Create a transposed tibble
+  temp <- as_tibble(
+    cbind(nms = names(temp), t(temp))
+  )
+  
+  # Use gene names as column names
+  colnames(temp) <- temp[1, ]
+  
+  # Remove name row
+  temp <- temp[-1, ]
+  
+  # Make all intenisity columns numeric
+  temp[, -1] <- temp[, -1] %>% 
+    mutate_all(.funs = as.numeric)
+  
+  # Separate name column into each variable and join all except sample number
+  temp <- temp %>% 
+    separate(name, into = variables, sep = "_") %>% 
+    unite(col = "group", paste(variables[-length(variables)]))
+  
+  # Perform PCA
+  temp <- temp %>% 
+    nest() %>% # Nest data
+    mutate(
+      pca = map(data, ~ prcomp(.x %>% dplyr::select(-group:-sample),
+                               scale = TRUE, center = TRUE)), # Perform PCA
+      pca_aug = map2(pca, data, ~ augment(.x, data = .y)) # Extract PCA
+    )
+  
+  return(temp)
+}
+
+calculate_variance_explained <- function(tb) {
+  
+  data <- tb %>% 
+    unnest(pca_aug) %>% 
+    summarise_at(.vars = vars(contains("fittedPC")), .funs = funs(var)) %>% 
+    gather(key = pc, value = variance) %>% 
+    mutate(
+      var_exp     = variance / sum(variance),
+      cum_var_exp = cumsum(var_exp),
+      pc          = str_replace(pc, ".fittedPC", "") 
+    )
+  
+  return(data)
+}
+
+make_var_exp_kable <- function(tb, print_format) {
+  
+  library(knitr)
+  library(kableExtra)
+  
+  kable(
+    tb, 
+    format    = print_format,
+    digits    = 4,
+    col.names = c("PC", "Variance",
+                  "Proportion explained", 
+                  "Cumulative proportion explained"),
+    align     = "c",
+    caption   = "Proportion of the variance that each principal component explains"
+  ) %>% 
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = F)
+}
+
+plot_var_exp <- function(tb) {
+  tb %>% 
+    mutate(`Principal Component` = as.numeric(str_replace(pc, "PC", ""))) %>% 
+    rename(
+      `Variance Explained`            = var_exp,
+      `Cumulative Variance Explained` = cum_var_exp
+      ) %>%
+    dplyr::select(-pc) %>% 
+    gather(key = key, value = value, `Variance Explained`:`Cumulative Variance Explained`) %>% 
+    ggplot(aes(`Principal Component`, value, group = key)) +
+    geom_point() +
+    geom_line() +
+    facet_wrap(~ key, scales = "free_y") +
+    lims(y = c(0, 1)) +
+    labs(
+      y     = "Proportion of variance",
+      title = "Proportion of variance explained by each principal component"
+    ) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line(color = "black")
+    )
+}
+```
+
+```{r pca_format}
+# Perform PCA
+pca_imputed_data <- format_data_for_PCA(wide_imputed_tibble, 18, c("tissue", "genotype", "sample"))
+```
+
+```{r}
+
+# Calculate variance explained
+var_explained <- calculate_variance_explained(pca_imputed_data)
+
+# Calculate variance explained
+var_explained <- pca_imputed_data %>%
+  unnest(pca_aug) %>%
+  summarise_at(.vars = vars(contains("fittedPC")), .funs = funs(var)) %>%
+  gather(key = pc, value = variance) %>%
+  mutate(
+    var_exp     = variance / sum(variance),
+    cum_var_exp = cumsum(var_exp),
+    pc          = str_replace(pc, ".fittedPC", "")
+  )
+
+
+# Print variance explained table
+make_var_exp_kable(var_explained, "html")
+
+
+# Plot variance explained graphs
+plot_var_exp(var_explained)
+```
+
+From these plots I would say that the "elbow" is somewhere between the third and 
+fifth principal component.
+
+```{r pca_plot_func, echo = FALSE}
+plot_pca <- function(tb, plot_title) {
+  
+  library(tidyverse)
+  library(purrr)
+  
+  # Plot the first two principal components
+  p <- tb %>% 
+    mutate(
+      pca_graph = map2(
+        .x = pca,
+        .y = data,
+        ~ autoplot(
+          .x,
+          data         = .y,
+          colour       = "group",
+          size         = 3,
+          loadings     = FALSE,
+          label        = TRUE,
+          label.label  = "sample",
+          label.repel  = TRUE,
+          label.colour = "black"
+        ) +
+          theme(panel.background = element_blank(),
+                axis.line        = element_line(color = "black"),
+                plot.title       = element_text(hjust = 0.5),
+                legend.key       = element_blank()) +
+          labs(x     = "Principal Component 1",
+               y     = "Principal Component 2",
+               title = plot_title)
+      )
+    ) %>%
+    pull(pca_graph)
+  
+  # Add horizontal and vertical lines to the plot
+  p1 <- p[[1]] + # p[[1]] is used to get the "pure" plot
+    geom_hline(yintercept = 0,
+               color = "grey",
+               linetype = "dashed") +
+    geom_vline(xintercept = 0,
+               color = "grey",
+               linetype = "dashed")
+  
+  # Reverse the layers to plot lines beneath the scatterplot
+  p1$layers <- rev(p1$layers)
+  
+  # Plot
+  p1
+}
+```
+
+```{r}
+# Plot first two PCs
+plot_pca(pca_imputed_data, "First two principal components of PCA performed on MIDY adipose tissue")
+```
+
+The first two PCs separates both tissues pretty well, and to a lesser extent
+the genotype groups.
+
+I'd like to do plot of more of the PCs.
+
+```{r, echo = FALSE}
+plot_multiple_PCAs <- function(tb, pc_start, pc_end) {
+  # Create empty list
+  pca_plot_list <- list()
+  
+  # Save plots in the list
+  for (i in (pc_start + 1):pc_end) {
+    
+    # Plot
+    temp_plot <-  autoplot(tb[["pca"]][[1]], data = tb[["data"]][[1]],
+                                x = pc_start,
+                                y = i,
+                                colour       = "group",
+                                size         = 3,
+                                loadings     = FALSE,
+                                label        = TRUE,
+                                label.label  = "sample",
+                                label.repel  = TRUE,
+                                label.colour = "black") +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "grey") +
+      geom_vline(xintercept = 0, linetype = "dashed", color = "grey") +
+      theme(plot.title = element_text(hjust = 0.5),
+            panel.background = element_blank(),
+            panel.grid = element_blank(),
+            axis.line = element_line("black")) 
+    
+    # Reverse the plot layers
+    temp_plot$layers <- rev(temp_plot$layers)
+    
+    # Save plot in the list
+    pca_plot_list[[i - pc_start]] <- temp_plot
+  }
+  
+  # Return the final list
+  return(pca_plot_list)
+}
+```
+
+```{r, echo }
+pca_1 <- plot_multiple_PCAs(pca_imputed_data, 1, 5)
+pca_1
+```
+
+```{r}
+pca_2 <- plot_multiple_PCAs(pca_imputed_data, 2, 5)
+pca_2
+```
+
+
+```{r}
+pca_3 <- plot_multiple_PCAs(pca_imputed_data, 3, 5)
+pca_3
+```
+
+These plots suggest that there might be two potential outliers __m_wt_743__
+and __sc_wt_741__.
+
+## 2.6 Heatmap
+
+```{r eval = FALSE}
+pheatmap(imputed_tibble_for_pca[, 2:18], method = "ward.D2", 
+         show_rownames = FALSE)
+
+pheatmap(imputed_tibble_for_pca[, 2:18], method = "ward.D2", 
+         show_rownames = FALSE,
+         color = colorRampPalette(c("red", "white", "blue"))(100))
+```
+
+
+# 3 2-way ANOVA
+
+Perform a 2-way ANOVA on the imputed dataset.
+
+```{r echo = FALSE}
+multiple_2way_anova_in_tidyverse_with_tukeyHSD <- function(tb, cases, observations,
+                                                           independent_var1,
+                                                           independent_var2) {
+  
+  # Libraries
+  library(tidyverse)
+  library(broom)
+  
+  # Quoting
+  cases <- enquo(cases)
+  
+  lm_formula <- as.formula(paste(observations, "~", independent_var1, "*", independent_var2))
+  
+  interaction_effect <- paste(independent_var1, ":", independent_var2, sep = "")
+  
+  # 2-way ANOVA
+  anova <- tb %>%
+    group_by(!!cases) %>%
+    nest() %>%
+    mutate(anova = map(data, ~ aov(lm_formula, data = .x)),
+           tukey = map(data, ~ TukeyHSD(aov(lm_formula, data = .x),
+                                        which = interaction_effect)),
+           tidy_anova = map(anova, tidy),
+           tidy_tukey = map(tukey, tidy))
+  
+  return(anova)
+}
+```
+
+```{r anova}
+adipose_anova <- multiple_2way_anova_in_tidyverse_with_tukeyHSD(adipose_imputed, name, "LFQ", "genotype", "tissue")
+```
+
+Unnest anova list-column.
+
+```{r echo = FALSE}
+make_significant_ANOVA_kable <- function(tb) {
+    
+  kable(tb %>%
+          dplyr::filter(term != "Residuals") %>%
+          group_by(term) %>%
+          summarise(n = sum(p.value < 0.05)),
+        caption = "Number of significant differences per factor.", format = "pandoc",
+        align = "c")
+}
+
+plot_pvalue_histogram_ANOVA <- function(tb, col_name, limit_max) {
+  
+  # Quote
+  col_name <- enquo(col_name)
+  
+  # pvalue plot
+  tb %>% 
+    ggplot(aes(x = !!col_name)) +
+    geom_histogram(breaks = seq(0, 1, 0.05), fill = "black", color = "white") +
+    xlab("p-value") +
+    ylab("Number of proteins") +
+    facet_wrap(~ term) +
+    scale_y_continuous(limits = c(0, limit_max), expand = c(0, 0)) + 
+    labs(
+      title = "p-value histograms for each ANOVA factor"
+    ) +
+    theme(panel.background = element_blank(),
+          axis.line = element_line(color = "black"))
+}
+```
+
+```{r anova_results}
+# Extract p-values and more
+anova_results <- adipose_anova %>%
+  unnest(tidy_anova) %>% 
+  dplyr::filter(term != "Residuals")
+
+anova_results
+
+# Count number of significant p-values
+make_significant_ANOVA_kable(anova_results)
+
+# Plot pvalue histograms for each factor
+plot_pvalue_histogram_ANOVA(anova_results, p.value, 750)
+```
+
+```{r , echo = FALSE}
+# Function
+fdr_correction_with_qvalue <- function(tb, p_value_col) {
+  
+  # Quote
+  p_value_col <- enquo(p_value_col)
+  
+  # fdr correction
+  qvalues <- qvalue(as_vector(tb %>%
+                                ungroup() %>% # To make sure to only get one column
+                                dplyr::select(!!p_value_col)))
+  
+  return(qvalues)
+}
+```
+
+```{r}
+# fdr correction with the qvalue package
+qvalues <- fdr_correction_with_qvalue(anova_results, p.value)
+
+# Plot fdr statistics
+plot(qvalues)
+hist(qvalues)
+```
+
+```{r, echo = FALSE}
+# Function
+join_qvalues_with_ANOVA_results <- function(tb) {
+  qvalues <- tibble(p.value = qvalues[["pvalues"]], qvalue = qvalues[["qvalues"]])
+  
+  anova_results <- full_join(anova_results, qvalues, by = "p.value")
+  return(anova_results)
+}
+```
+
+```{r}
+# Join qvalues with anova results
+anova_results <- join_qvalues_with_ANOVA_results(qvalues)
+
+kable(anova_results %>%
+        dplyr::filter(term != "Residuals") %>%
+        group_by(term) %>%
+        summarise(n = sum(qvalue < 0.05)),
+      caption = "Number of significant qvalues.", format = "pandoc")
+
+kable(anova_results %>%
+        dplyr::filter(term != "Residuals") %>%
+        group_by(term) %>%
+        summarise(n = sum(qvalue < 0.10)),
+      caption = "Number of significant q-values.", format = "pandoc")
+```
+
+## 3.1 Tukey results
+
+```{r eval = FALSE}
+tukey_results <- adipose_anova %>%
+  unnest(tidy_tukey)
+```
+
+# 4 2-way ANOVA without interaction effects
+
+Since there doesn't seem to be many interaction effect, I want to see what 
+will happen if you do an ANOVA without the interaction effect between genotype
+and tissue.
+
+```{r echo = FALSE}
+multiple_2way_anova_in_tidyverse_with_no_interaction <- function(tb) {
+  
+  # Libraries
+  library(tidyverse)
+  library(broom)
+  
+  # 2-way ANOVA
+  anova <- tb %>%
+    group_by(name) %>%
+    nest() %>%
+    mutate(anova = map(data, ~ aov(LFQ ~ genotype + tissue, data = .x)),
+           tidy_anova = map(anova, tidy),
+           augment_anova = map(anova, augment),
+           glance_anova = map(anova, glance))
+  
+  return(anova)
+}
+```
+
+```{r no_interaction1}
+# Perform ANOVA without interaction effect
+adipose_anova_without_interaction <- multiple_2way_anova_in_tidyverse_with_no_interaction(adipose_imputed)
+
+# Extract p-values and more
+anova_results_without_interaction <- adipose_anova_without_interaction %>%
+  unnest(tidy_anova) %>% 
+  dplyr::filter(term != "Residuals")
+
+# Count number of significant p-values and print a kable
+make_significant_ANOVA_kable(anova_results_without_interaction)
+
+# Plot pvalue histograms for each factor
+plot_pvalue_histogram_ANOVA(anova_results_without_interaction, p.value, 750)
+
+```
+
+```{r no_interaction2}
+# fdr correction with the qvalue package
+qvalues <- fdr_correction_with_qvalue(anova_results_without_interaction, p.value)
+
+# Plot fdr statistics
+plot(qvalues)
+hist(qvalues)
+
+# Join qvalues with anova results
+qvalues <- tibble(p.value = qvalues[["pvalues"]], qvalue = qvalues[["qvalues"]])
+anova_results_without_interaction <- full_join(anova_results_without_interaction, qvalues, by = "p.value")
+
+kable(anova_results_without_interaction %>%
+        dplyr::filter(term != "Residuals") %>%
+        group_by(term) %>%
+        summarise(n = sum(qvalue < 0.05)),
+      caption = "Number of significant qvalues.", format = "pandoc")
+
+kable(anova_results_without_interaction %>%
+        dplyr::filter(term != "Residuals") %>%
+        group_by(term) %>%
+        summarise(n = sum(qvalue < 0.10)),
+      caption = "Number of significant q-values.", format = "pandoc")
+```
+## 4.1 Calculate means
+
+```{r}
+# Means for each group
+adipose_means <- adipose_imputed %>% 
+  group_by(name, tissue, genotype) %>% 
+  summarise(
+    mean = mean(LFQ)
+  ) %>% 
+  unite(group, tissue, genotype, sep = "_") %>%
+  spread(key = "group", value = "mean") %>% 
+  mutate(sc_diff = sc_midy - sc_wt,
+         m_diff  = m_midy  - m_wt)
+
+# Means for each tissue group
+tissue_means <- adipose_imputed %>% 
+  group_by(name, tissue) %>% 
+  summarise(
+    mean = mean(LFQ)
+  ) %>% 
+  spread(key = "tissue", value = "mean")
+
+# Means for each genotype group
+genotype_means <- adipose_imputed %>% 
+  group_by(name, genotype) %>% 
+  summarise(
+    mean = mean(LFQ)
+  ) %>% 
+  spread(key = "genotype", value = "mean")
+
+# join mean tables
+adipose_means <- full_join(adipose_means[, 1:5], tissue_means, by = "name")
+adipose_means <- full_join(adipose_means, genotype_means, by = "name")
+```
+
+Join means with qvalue data.
+
+```{r}
+# Function for spreading two columns
+spread_nt <- function(data,key_col,...,fill = NA,
+                      convert = TRUE,drop = TRUE,sep = "_"){
+  key_quo <- rlang::enquo(key_col)
+  val_quos <- rlang::quos(...)
+  value_cols <- unname(tidyselect::vars_select(names(data),!!!val_quos))
+  key_col <- unname(tidyselect::vars_select(names(data),!!key_quo))
+
+  data %>%
+    gather(key = ..var..,value = ..val..,!!!val_quos) %>%
+    unite(col = ..grp..,c(key_col,"..var.."),sep = sep) %>%
+    spread(key = ..grp..,value = ..val..,fill = fill,
+           convert = convert,drop = drop,sep = NULL)
+}
+
+# Spread pvalue, qvalues and join with means
+anova_results_means_withhout_interaction <- anova_results_without_interaction %>% 
+  dplyr::select(name, term, p.value, qvalue) %>% 
+  spread_nt(key_col = term, p.value, qvalue) %>% 
+  full_join(adipose_means, by = "name")
+```
+
+## 4.2 Filter for significant q-values
+
+```{r}
+genotype_anova_results_without_interaction_qval_0.05 <- anova_results_means_withhout_interaction %>% 
+  dplyr::filter(genotype_qvalue < 0.05) %>% 
+  dplyr::select(name, genotype_p.value, genotype_qvalue, midy, wt) %>% 
+  mutate(l2fc = midy - wt) %>% 
+  arrange(desc(l2fc))
+
+genotype_anova_results_without_interaction_qval_0.05 <- genotype_anova_results_without_interaction_qval_0.05 %>% 
+  left_join(protein_names, by = "name") %>% 
+  rename(`Gene name` = name, 
+         `Genotype p-value` = genotype_p.value,
+         `Genotype q-value` = genotype_qvalue, 
+         `MIDY mean` = midy, 
+         `WT mean` = wt, 
+         `log2 fold change` = l2fc,
+         `Protein name` = protein_name)
+
+# genotype_anova_results_without_interaction_qval_0.05 %>% 
+#   write_tsv("genotype_anova_results_without_interaction_qval_0.05.tsv")
+
+tissue_anova_results_without_interaction_qval_0.05 <- anova_results_means_withhout_interaction %>% 
+  dplyr::filter(tissue_qvalue < 0.05) %>% 
+  dplyr::select(name, tissue_p.value, tissue_qvalue, sc, m) %>% 
+  mutate(l2fc = sc - m) %>% 
+  arrange(desc(l2fc))
+
+tissue_anova_results_without_interaction_qval_0.05 <- tissue_anova_results_without_interaction_qval_0.05 %>% 
+  left_join(protein_names, by = "name") %>% 
+  rename(`Gene name` = name, 
+         `Tissue p-value` = tissue_p.value,
+         `Tissue q-value` = tissue_qvalue, 
+         `SC mean` = sc, 
+         `M mean` = m, 
+         `log2 fold change` = l2fc,
+         `Protein name` = protein_name)
+# tissue_anova_results_without_interaction_qval_0.05 %>% 
+#   write_tsv("tissue_anova_results_without_interaction_qval_0.05.tsv")
+
+kable(tissue_anova_results_without_interaction_qval_0.05 %>% 
+        summarise(`Subcutaneous adipose tissue` = sum(`log2 fold change` > 0),
+                  `Mesenterial adipose tissue` = sum(`log2 fold change` < 0)),
+      caption = "Number of proteins signifcantly more abundant according to 2-way ANOVA",
+      format = "pandoc",
+      align = "c"
+      )
+```
+
+Are there proteins found to be significantly differentially expressed in both
+groupings.
+
+```{r}
+left_join(genotype_anova_results_without_interaction_qval_0.05,
+          tissue_anova_results_without_interaction_qval_0.05, by = "Gene name") %>%
+  dplyr::filter(!is.na(`Tissue q-value`))
+```
+
+15 proteins are found to be significantly differentially expressed in both 
+tissue and genotype groupings.
+
+## 4.3 Volcano plots
+
+```{r}
+# Calculate lfc2 for each group
+adipose_lfc2 <- adipose_means %>% 
+  group_by(name) %>% 
+  mutate(tissue = m - sc,
+         genotype = midy - wt) %>%
+  dplyr::select(name, tissue, genotype) %>% 
+  gather(tissue, genotype, key = "term", value = "lfc2") # term is used for easy joining with anova results
+
+# Join with anova results
+anova_results_without_interaction <- full_join(anova_results_without_interaction, adipose_lfc2,
+                                               by = c("name", "term")) %>% 
+  rename(group = term)
+
+anova_results_without_interaction_for_volcano <- anova_results_without_interaction %>% 
+  mutate(enriched_1 = as.numeric(lfc2 > 0 & qvalue < 0.05),
+         enriched_2 = as.numeric(lfc2 < 0 & qvalue < 0.05),
+         significant_temp = (enriched_1 + enriched_2 * 2) + 1,
+         significant = case_when(group == "tissue" & significant_temp > 1 ~ significant_temp + 2,
+                                 group == "tissue" & significant_temp == 1 ~ significant_temp,
+                                 group == "genotype" ~ significant_temp),
+         significant = as.factor(significant))
+
+
+anova_results_without_interaction_for_volcano %>%
+  ggplot(aes(lfc2, -log10(p.value), color = significant)) +
+  geom_point() +
+  scale_color_manual("More abundant in:",
+                     values = c("black", "#00BFC4", "#F8666D", "#7CAE00", "#C77CFF"),
+                     breaks = c(2, 3, 4, 5),
+                     labels = c("MIDY", "WT", "Adipose, mesenterial", "Adipose, subcutaneous")) +
+  facet_grid(~ group, scales = "free_x") +
+  theme(panel.background = element_blank(),
+        axis.line = element_line("black"))
+```
+
+# 5 t-test
+
+Function for performing multiple t-tests.
+
+```{r echo = FALSE}
+multiple_ttests <- function(tb, col_name, equal_var = FALSE) {
+  
+  # Libraries
+  library(tidyverse)
+  library(broom)
+  
+  # Quote
+  col_name <- enquo(col_name)
+  
+  # Calculate the mean for each protein
+  means <- tb %>%
+    group_by(name) %>%
+    summarise(mean_total = mean(LFQ))
+  
+  
+  # ttest
+  t_test <-  tb %>%
+    dplyr::select(name, !!col_name, LFQ) %>%
+    group_by(name, !!col_name) %>%
+    nest() %>%
+    spread(key = !!col_name, value = data) %>%
+    group_by(name) %>%
+    mutate(p_value = t.test(unlist(midy), unlist(wt), var.equal = equal_var)$p.value,
+           mean_midy = mean(unlist(midy)),
+           mean_wt = mean(unlist(wt)),
+           log2_difference = mean_midy - mean_wt)
+  
+  # Join data sets
+  t_test <- left_join(t_test, means, by = "name")
+  
+  return(t_test)
+}
+```
+
+## 5.1 Mesenterial
+
+First select mesenterial tissue.
+
+```{r}
+mesenterial_data <- adipose_imputed %>%
+  dplyr::filter(tissue == "m")
+```
+
+### 5.1.1 t-test, mesenterial, unequal variance
+
+```{r}
+# t_test for mesenterial tissue
+t_test_m <- multiple_ttests(mesenterial_data, genotype, equal_var = FALSE)
+```
+
+```{r}
+plot_pvalue_histogram <- function(tb, col_name, limit_max, plot_title = "p-value histogram") {
+  
+  # Quote
+  col_name <- enquo(col_name)
+  
+  # pvalue plot
+  tb %>% 
+    ggplot(aes(x = !!col_name)) +
+    geom_histogram(breaks = seq(0, 1, 0.05), fill = "black", color = "white") +
+    xlab("p-value") +
+    ylab("Number of proteins") +
+    scale_y_continuous(limits = c(0, limit_max), expand = c(0, 0)) + 
+    labs(
+      title = plot_title
+    ) +
+    theme(panel.background = element_blank(),
+          axis.line = element_line(color = "black"))
+}
+```
+
+Plot p-value histogram.
+
+```{r}
+plot_pvalue_histogram(t_test_m, p_value, 150)
+```
+
+Use `qvalue` to calculate q-values.
+
+```{r}
+fdr_correction_with_qvalue <- function(tb, p_value_col) {
+  
+  # Quote
+  p_value_col <- enquo(p_value_col)
+  
+  # fdr correction
+  qvalues <- qvalue(as_vector(tb %>%
+                                ungroup() %>% # To make sure to only get one column
+                                dplyr::select(!!p_value_col)))
+  
+  return(qvalues)
+}
+```
+
+```{r}
+q_values <- fdr_correction_with_qvalue(t_test_m, p_value)
+
+plot(q_values)
+hist(q_values)
+```
+
+```{r}
+join_qvalues_with_results <- function(tb, p_value_col = "p_value") {
+  
+  # Make a tibble with p and qvalues
+  q_values <- tibble(p_value = q_values[["pvalues"]], q_value = q_values[["qvalues"]])
+  
+  # Join with ANOVA results
+  tb <- full_join(tb, q_values, by = p_value_col)
+  
+  return(tb)
+}
+```
+
+```{r}
+t_test_m_unequal <- join_qvalues_with_results(t_test_m)
+```
+
+## 5.2 Subcutaneous
+
+First select subcutaneous tissue.
+
+```{r}
+sc_data <- adipose_imputed %>%
+  dplyr::filter(tissue == "sc")
+```
+
+### 5.2.1 t-test, sc, unequal variance
+
+```{r}
+t_test_sc_unequal <- multiple_ttests(sc_data, genotype, equal_var = FALSE)
+```
+
+# 6 Modelling
+
+## 6.1 Separate out the effect of tissue
+
+```{r, echo = FALSE}
+linear_model_1_ind_var <- function(tb, cases, observations, ind_variable) {
+  
+  cases <- enquo(cases)
+  
+  lm_formula <- as.formula(paste(observations, "~", ind_variable))
+  
+  residuals <- tb %>% 
+    group_by(!!cases) %>% 
+    nest() %>% 
+    mutate(model = map(data, ~ lm(lm_formula, data = .x)),
+           resids = map2(data, model, add_residuals)) %>% 
+    unnest(resids)
+  
+  return(residuals)
+}
+```
+
+Remove tissue influence on variation.
+
+```{r}
+lm_tissue_residuals <- linear_model_1_ind_var(adipose_imputed, name, "LFQ", "tissue")
+```
+
+### 6.1.1 t-test
+
+```{r echo = FALSE}
+multiple_ttests <- function(tb, group_var, values = LFQ, equal_var = FALSE) {
+  
+  # Libraries
+  library(tidyverse)
+  library(broom)
+  
+  # Quote
+  group_var <- enquo(group_var)
+  values <-  enquo(values)
+  
+  # Calculate the mean for each protein
+  means <- tb %>%
+    group_by(name) %>%
+    summarise(mean_total = mean(!!values))
+  
+  
+  # ttest
+  t_test <-  tb %>%
+    dplyr::select(name, !!group_var, !!values) %>%
+    group_by(name, !!group_var) %>%
+    nest() %>%
+    spread(key = !!group_var, value = data) %>%
+    group_by(name) %>%
+    mutate(p_value = t.test(unlist(midy), unlist(wt), var.equal = equal_var)$p.value,
+           mean_midy = mean(unlist(midy)),
+           mean_wt = mean(unlist(wt)),
+           log2_difference = mean_midy - mean_wt)
+  
+  # Join data sets
+  t_test <- left_join(t_test, means, by = "name")
+  
+  return(t_test)
+}
+```
+
+```{r}
+lm_genotype_resids_ttest <- multiple_ttests(lm_tissue_residuals, genotype, values = resid, equal_var = FALSE)
+
+# Count number of significant proteins
+kable(lm_genotype_resids_ttest %>% 
+  ungroup() %>% 
+  summarise(n = sum(p_value < 0.05)),
+  caption = "Number of significant proteins between genotype groups (p-value < 0.05") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = TRUE)
+```
+
+```{r}
+plot_pvalue_histogram(lm_genotype_resids_ttest, col_name = p_value, limit_max = 250)
+```
+
+
+### 6.1.2 Correlation between t-test on residuals and 2-way ANOVA
+
+I want to compare the results of the 2-way ANOVA and linear modelling with 
+t-test.
+
+```{r}
+# Protein list with ranks according to significance (t-test)
+lm_genotype_rank_list <- lm_genotype_resids_ttest %>% 
+  ungroup() %>% 
+  arrange(p_value) %>% 
+  dplyr::select(name, p_value) %>% 
+  mutate(rank = rank(p_value))
+
+# Protein list with ranks according to significance (ANOVA, genotype)
+anova_genotype_no_inter_rank_list <- anova_results_without_interaction %>% 
+  dplyr::filter(group == "genotype") %>% 
+  dplyr::select(name, p.value) %>% 
+  arrange(p.value) %>% 
+  ungroup() %>% 
+  mutate(rank_anova = rank(p.value))
+
+# Join data
+genotype_pvals_ranks <- full_join(lm_genotype_rank_list, anova_genotype_no_inter_rank_list, by = "name")
+```
+
+Compare ranks between the methods.
+
+```{r}
+# Test correlation with a spearman rank test
+cor.test(genotype_pvals_ranks$p_value, genotype_pvals_ranks$p.value,
+         method ="spearman")
+cor.test(genotype_pvals_ranks$rank, genotype_pvals_ranks$rank_anova,
+         method ="spearman")
+```
+
+The two methods are higly correlated with a rho value of 0.9978.
+
+```{r}
+genotype_pvals_ranks %>% 
+  ggplot(aes(p_value, p.value)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+```
+
+As can be seen the p-values correlate well.
+
+```{r}
+# Extract only signicant proteins
+lm_genotype_sig_prot <- genotype_pvals_ranks %>% 
+  dplyr::filter(p_value < 0.05)
+anova_genotype_sig_prot <- genotype_pvals_ranks %>% 
+  dplyr::filter(p.value < 0.05)
+
+left_join(anova_genotype_sig_prot %>% 
+            dplyr::select(name), lm_genotype_sig_prot, by = "name") %>% 
+  summarise(n = sum(is.na(p_value)))
+
+left_join(anova_genotype_sig_prot %>% 
+            dplyr::select(name), lm_genotype_sig_prot, by = "name") %>% 
+  dplyr::filter(is.na(p_value))
+
+genotype_pvals_ranks %>% 
+  dplyr::filter(name == "SCD" | name == "XP_020955891")
+```
+
+There are only two proteins that are not considered to be significant with 
+linear model and t-test but that were significant in the 2-way ANOVA. These two
+proteins are probably not going to be significant after multiple hypotheses 
+correction.
+
+## 6.2 Separate out the effect of tissue
+
+```{r}
+lm_genotype_resids <- linear_model_1_ind_var(adipose_imputed, cases = name, observations = "LFQ", ind_variable = "genotype")
+```
+
+### 6.2.1 t-test
+
+```{r echo = FALSE}
+multiple_ttests <- function(tb, group_var, 
+                            group_1,
+                            group_2,
+                            mean_1,
+                            mean_2,
+                            values = LFQ, 
+                            equal_var = FALSE) {
+  
+  # Libraries
+  library(tidyverse)
+  library(broom)
+  
+  # Quote
+  group_var <- enquo(group_var)
+  values    <- enquo(values)
+  group_1   <- enquo(group_1)
+  group_2   <- enquo(group_2)
+  mean_1_name <- enquo(mean_1)
+  mean_2_name <- enquo(mean_2)
+  
+  # Calculate the mean for each protein
+  means <- tb %>%
+    group_by(name) %>%
+    summarise(mean_total = mean(!!values))
+  
+  
+  # ttest
+  t_test <-  tb %>%
+    dplyr::select(name, !!group_var, !!values) %>%
+    group_by(name, !!group_var) %>%
+    nest() %>%
+    spread(key = !!group_var, value = data) %>%
+    group_by(name) %>%
+    mutate(p_value = t.test(unlist(!!group_1), unlist(!!group_2), var.equal = equal_var)$p.value,
+           !!mean_1_name := mean(unlist(!!group_1)),
+           !!mean_2_name := mean(unlist(!!group_2)),
+           log2_difference = !!mean_1_name - !!mean_2_name)
+  
+  # Join data sets
+  t_test <- left_join(t_test, means, by = "name")
+  
+  return(t_test)
+}
+```
+
+```{r}
+lm_tissue_resids_ttest <- multiple_ttests(lm_genotype_resids, 
+                                          group_var = tissue,
+                                          group_1 = sc,
+                                          group_2 = m,
+                                          mean_1 = mean_sc,
+                                          mean_2 = mean_m,
+                                          values = resid)
+
+# Count number of significant proteins
+kable(lm_tissue_resids_ttest %>% 
+  ungroup() %>% 
+  summarise(n = sum(p_value < 0.05)), 
+  caption = "Number of significant proteins found between tissue groups (p-value y 0.05)") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = TRUE)
+```
+
+```{r}
+plot_pvalue_histogram(lm_tissue_resids_ttest, col_name = p_value, limit_max = 700)
+```
+
+
+### 6.2.2 Correlation between t-test on residuals and 2-way ANOVA
+
+I want to compare the results of the 2-way ANOVA and linear modelling with 
+t-test.
+
+```{r}
+# Protein list with ranks according to significance (t-test)
+lm_tissue_rank_list <- lm_tissue_resids_ttest %>% 
+  ungroup() %>% 
+  arrange(p_value) %>% 
+  dplyr::select(name, p_value) %>% 
+  mutate(rank = rank(p_value))
+
+# Protein list with ranks according to significance (ANOVA, genotype)
+anova_tissue_no_inter_rank_list <- anova_results_without_interaction %>% 
+  dplyr::filter(group == "tissue") %>% 
+  dplyr::select(name, p.value) %>% 
+  arrange(p.value) %>% 
+  ungroup() %>% 
+  mutate(rank_anova = rank(p.value))
+
+# Join data
+tissue_pvals_ranks <- full_join(lm_tissue_rank_list, anova_tissue_no_inter_rank_list, by = "name")
+```
+
+Compare ranks between the methods.
+
+```{r}
+# Test correlation with a spearman rank test
+cor.test(tissue_pvals_ranks$p_value, tissue_pvals_ranks$p.value,
+         method ="spearman")
+cor.test(tissue_pvals_ranks$rank, tissue_pvals_ranks$rank_anova,
+         method ="spearman")
+```
+
+The two methods are higly correlated with a rho value of 0.9996.
+
+```{r}
+tissue_pvals_ranks %>% 
+  ggplot(aes(p_value, p.value)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+```
+
+As can be seen the p-values correlate well, even better than for genotype.
+
+```{r}
+# Extract only signicant proteins
+lm_tissue_sig_prot <- tissue_pvals_ranks %>% 
+  dplyr::filter(p_value < 0.05)
+anova_tissue_sig_prot <- tissue_pvals_ranks %>% 
+  dplyr::filter(p.value < 0.05)
+
+left_join(anova_tissue_sig_prot %>% 
+            dplyr::select(name), lm_tissue_sig_prot, by = "name") %>% 
+  summarise(n = sum(is.na(p_value)))
+
+left_join(anova_tissue_sig_prot %>% 
+            dplyr::select(name), lm_tissue_sig_prot, by = "name") %>% 
+  dplyr::filter(is.na(p_value))
+
+tissue_pvals_ranks %>% 
+  dplyr::filter(name == "C7" | name == "DLD")
+```
+
+There are only two proteins that are not considered to be significant with 
+linear model and t-test but that were significant in the 2-way ANOVA. As for 
+genotype, these two proteins are probably not going to be significant after 
+multiple hypotheses correction.
+
+## 6.3 Multiple hypotheses correction
+
+Since ther results are so similar I will pool the p-values from the two linear
+models and perform multiple hypotheses testing.
+
+```{r}
+# Join results from the t-tests on the different variables
+p_vals_lm <- full_join(lm_genotype_resids_ttest %>% 
+            ungroup() %>% 
+            dplyr::select(name, p_value), 
+          lm_tissue_resids_ttest %>% 
+            ungroup() %>% 
+            dplyr::select(name, p_value),
+          by = "name") %>% 
+  gather(p_value.x, p_value.y, key = "type", value = p_value)
+
+# fdr correction
+qvals_lm <- fdr_correction_with_qvalue(p_vals_lm, p_value)
+```
+
+```{r echo = FALSE}
+join_qvalues_with_results <- function(tb, tb2, p_value_col = "p_value") {
+  
+  # Make a tibble with p and qvalues
+  qvalues <- tibble(p_value = tb2[["pvalues"]], qvalue = tb2[["qvalues"]])
+  
+  # Join with ANOVA results
+  data <- full_join(tb, qvalues, by = p_value_col)
+  
+  return(data)
+}
+```
+
+### 6.3.1 Genotype FDRs
+
+```{r}
+# Join qvalues with pvalues: genotype
+lm_geno_resids_fdr <- join_qvalues_with_results(lm_genotype_resids_ttest, qvals_lm) %>% 
+  dplyr::filter(!is.na(name))
+
+# Print number of proteins significant at q-value < 0.05
+kable(
+  lm_geno_resids_fdr %>% 
+    ungroup() %>% 
+    summarise(n = sum(qvalue < 0.05)),
+  caption = "Number of significant proteins with q-value < 0.05"
+) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = TRUE)
+```
+
+Check whether the proteins are significant both in the ANOVA and the t-test 
+following a linear model.
+
+```{r}
+# Extract significant proteins from ANOVA after FDR correction
+anova_geno_sig_qval <- anova_results_means_withhout_interaction %>% 
+  dplyr::filter(genotype_qvalue < 0.05) %>% 
+  dplyr::select(name)
+
+# Extract significant proteins from t-test after FDR correction
+lm_geno_resids_fdr_sig <- lm_geno_resids_fdr %>% 
+  dplyr::filter(qvalue < 0.05)
+
+# Check whether all proteins from ANOVA are significant in the t-test as well
+left_join(anova_geno_sig_qval, 
+          lm_geno_resids_fdr_sig,
+          by = "name") %>% 
+  summarise(n = sum(is.na(p_value)))
+```
+
+All proteins found to be signicant in the ANOVA are found to be significant in
+the t-test as well.
+
+Which proteins are significant in the t-test but not the ANOVA?
+
+```{r}
+
+```
+
+#### 6.3.1.1 Volcano plot
+
+```{r echo = FALSE}
+prepare_data_for_volcano_plot <- function (tb, group_neg, group_pos) {
+  data_for_volcano <- tb %>% 
+    mutate(significant = case_when(
+      log2_difference < 0 & qvalue < 0.05 ~ group_neg,
+      log2_difference > 0 & qvalue < 0.05 ~ group_pos,
+      qvalue >= 0.05 ~ "Not significant"
+    ))
+  
+  return(data_for_volcano)
+}
+```
+
+```{r}
+lm_geno_resid_fdr_volcano <- prepare_data_for_volcano_plot(lm_geno_resids_fdr, 
+                                                           group_neg = "WT", group_pos = "MIDY")
+```
+
+```{r echo = FALSE}
+plot_fdr_volcano <- function(tb, plot_title = "Volcano plot", break_vector, color_vector) {
+  tb %>% 
+    ggplot(aes(log2_difference, -log10(p_value), color = factor(significant))) +
+    geom_point() +
+    xlab(label = "Log2 fold change") +
+    ylab(label = "-Log10(p-value)") +
+    labs(
+      title = plot_title
+    ) +
+    scale_color_manual(name = "More abundant in:",
+                       breaks = break_vector,
+                       values = color_vector) +
+    theme(panel.background = element_blank(),
+          axis.line = element_line("black"),
+          legend.key = element_blank())
+}
+```
+
+```{r}
+plot_fdr_volcano(lm_geno_resid_fdr_volcano, 
+                 plot_title = "Volcano plot showing significant changes in protein expression\nbetween MIDY and WT pigs in adipose tissue",
+                 break_vector = c("MIDY", "WT"),
+                 color_vector = c("#00BFC4", "black", "#F8666D"))
+```
+
+#### 6.3.1.1 Proteins significantly more abundant in midy
+
+```{r echo = FALSE}
+make_top20_proteins_kable <- function (tb, top_rows, variable, caption_title, background_color = NULL) {
+  
+  variable = enquo(variable)
+  
+  kable(tb %>% 
+    ungroup() %>% 
+    top_n(top_rows, !!variable) %>% 
+    dplyr::select(name, log2_difference, p_value, qvalue) %>%
+    left_join(protein_names, by = "name") %>%
+    arrange(!!variable) %>%
+    mutate_if(is.numeric, funs(as.character(signif(., 3)))) %>% 
+    rename(`Gene name` = name, `Log2 fold change` = log2_difference, `p-value` = p_value, `q-value` = qvalue, `Protein name` = protein_name),
+  caption = caption_title,
+  align = "c") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  row_spec(0, background = background_color) %>% 
+  row_spec(1:20, color = "black")
+}
+```
+
+```{r}
+lm_geno_sig_midy <- lm_geno_resids_fdr %>% 
+  dplyr::filter(log2_difference > 0 & qvalue < 0.05)
+
+
+# Get 20 most significant proteins
+make_top20_proteins_kable(lm_geno_sig_midy, -20, qvalue, caption_title = "Top 20 most significant proteins more abundant in midy pigs in adipose tissue",
+                          "#00BFC4")  #%>% 
+  #save_kable("lm_genotype_top20sig_midy_kable.html")
+#webshot::webshot("lm_genotype_top20sig_midy_kable.html", file = "lm_genotype_top20sig_midy_kable.png")
+```
+
+#### 6.3.1.2 Proteins significantly more abundant in wt
+
+```{r}
+lm_geno_sig_wt <- lm_geno_resids_fdr %>% 
+  dplyr::filter(log2_difference < 0 & qvalue < 0.05)
+
+
+# Get 20 most significant proteins
+make_top20_proteins_kable(lm_geno_sig_wt, -20, qvalue, caption_title = "Top 20 most significant proteins more abundant in WT pigs in adipose tissue",
+                          "#F8666D")  %>% 
+  save_kable("lm_genotype_top20sig_wt_kable.html")
+webshot::webshot("lm_genotype_top20sig_wt_kable.html", file = "lm_genotype_top20sig_wt_kable.png")
+```
+
+### 6.3.2 Tissue FDRs
+
+```{r}
+# Join qvalues with pvalues: tissue
+lm_tissue_resids_fdr <- join_qvalues_with_results(lm_tissue_resids_ttest, qvals_lm) %>% 
+  dplyr::filter(!is.na(name))
+
+# Print number of proteins significant at q-value < 0.05
+
+kable(
+  lm_tissue_resids_fdr %>% 
+    ungroup() %>% 
+    summarise(n = sum(qvalue < 0.05)),
+  caption = "Number of significant proteins with q-value < 0.05"
+) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = TRUE)
+```
+
+Check whether the proteins are significant both in the ANOVA and the t-test 
+following a linear model.
+
+```{r}
+# Extract significant proteins from ANOVA after FDR correction
+anova_tissue_sig_qval <- anova_results_means_withhout_interaction %>% 
+  dplyr::filter(tissue_qvalue < 0.05) %>% 
+  dplyr::select(name)
+
+# Extract significant proteins from t-test after FDR correction
+lm_tissue_resids_fdr_sig <- lm_tissue_resids_fdr %>% 
+  dplyr::filter(qvalue < 0.05)
+
+# Check whether all proteins from ANOVA are significant in the t-test as well
+left_join(anova_tissue_sig_qval, 
+          lm_tissue_resids_fdr_sig,
+          by = "name") %>% 
+  summarise(n = sum(is.na(p_value)))
+
+left_join(anova_results_means_withhout_interaction %>%
+            dplyr::filter(tissue_qvalue < 0.05) %>% 
+            dplyr::select(name), 
+          lm_tissue_resids_fdr_sig, 
+          by = "name") %>% 
+  dplyr::filter(is.na(p_value))
+
+anova_results_means_withhout_interaction %>% 
+  dplyr::filter(name == "FKBP5" | name == "SLC5A10")
+
+lm_tissue_resids_fdr %>% 
+  dplyr::filter(name == "FKBP5" | name == "SLC5A10")
+```
+
+All but 2 proteins were found to be significant in the ANOVA are significant in
+the t-test as well!
+
+#### 6.3.2.1 Volcano plot
+
+```{r}
+lm_tissue_resids_fdr_volcano <- prepare_data_for_volcano_plot(lm_tissue_resids_fdr, group_neg = "Mesenterial",
+                              group_pos = "Subcutaneous")
+
+plot_fdr_volcano(lm_tissue_resids_fdr_volcano,
+                 plot_title = "Volcano plot showing significant changes in protein expression\nbetween mesenterial and subcutaneous adipose tissue in pigs",
+                 break_vector = c("Mesenterial", "Subcutaneous"),
+                 color_vector = c("#7CAE00", "black", "#C77CFF"))
+```
+
+#### 6.3.2.2 Proteins significantly more abundant in subcutaneous
+
+```{r echo = FALSE}
+make_top20_proteins_kable <- function (tb, top_rows, variable, caption_title, background_color = NULL) {
+  
+  variable = enquo(variable)
+  
+  kable(tb %>% 
+    ungroup() %>% 
+    top_n(top_rows, !!variable) %>% 
+    dplyr::select(name, log2_difference, p_value, qvalue) %>%
+    left_join(protein_names, by = "name") %>%
+    arrange(!!variable) %>%
+    mutate_if(is.numeric, funs(as.character(signif(., 3)))) %>% 
+    rename(`Gene name` = name, `Log2 fold change` = log2_difference, `p-value` = p_value, `q-value` = qvalue, `Protein name` = protein_name),
+  caption = caption_title,
+  align = "c") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  row_spec(0, background = background_color) %>% 
+  row_spec(1:20, color = "black")
+}
+```
+
+```{r}
+# Filter for proteins significanly upregulated in subcutaneous
+lm_t_sig_sc <- lm_tissue_resids_fdr %>% 
+  dplyr::filter(log2_difference > 0 & qvalue < 0.05)
+
+
+# Get 20 most significant proteins
+make_top20_proteins_kable(lm_t_sig_sc, -20, qvalue, caption_title = "Top 20 most significant proteins more abundant in subcutaneous adipose tissue",
+                          "#C77CFF") # %>% 
+  # save_kable("lm_tissue_top20sig_sc_kable.html")
+# webshot::webshot("lm_tissue_top20sig_sc_kable.html")
+
+# Get 20 proteins with highest l2fc
+lm_t_sig_sc %>% 
+  ungroup() %>% 
+  top_n(20, log2_difference)
+```
+
+
+```{r}
+lm_sig_m <- lm_tissue_resids_fdr %>% 
+  dplyr::filter(log2_difference < 0 & qvalue < 0.05)
+```
+
+#### 6.3.2.3 Proteins significantly more abundant in mesenteric
+```{r}
+make_top20_proteins_kable <- function (tb, top_rows, variable, caption_title, background_color = NULL) {
+  
+  variable = enquo(variable)
+  
+  table <- tb %>% 
+    ungroup() %>% 
+    top_n(top_rows, !!variable) %>% 
+    dplyr::select(name, log2_difference, p_value, qvalue) %>%
+    left_join(protein_names, by = "name") %>%
+    arrange(!!variable) %>%
+    mutate_if(is.numeric, funs(as.character(signif(., 3)))) %>% 
+    rename(`Gene name` = name, `Log2 fold change` = log2_difference, `p-value` = p_value, `q-value` = qvalue, `Protein name` = protein_name) 
+  
+  table[4, 5] <- str_replace(table[4, 5], "dihydrolipoyllysine-residue succinyltransferase.+", 
+              "dihydrolipoyllysine-residue succinyltransferase")  
+  
+  table %>% 
+    kable(caption = caption_title,
+    align = "c") %>% 
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+    row_spec(0, background = background_color) %>% 
+    row_spec(1:20, color = "black")
+}
+```
+
+```{r}
+# Filter for proteins significanly upregulated in subcutaneous
+lm_t_sig_m <- lm_tissue_resids_fdr %>% 
+  dplyr::filter(log2_difference < 0 & qvalue < 0.05)
+
+# Get 20 most significant proteins
+make_top20_proteins_kable(lm_t_sig_m, -20, qvalue, caption_title = "Top 20 most significant proteins more abundant in mesenteric adipose tissue",
+                          "#7CAE00") # %>% 
+  #save_kable("lm_tissue_top20sig_m_kable.html")
+#webshot::webshot("lm_tissue_top20sig_m_kable.html", file = "lm_tissue_top20sig_m_kable.png")
+```
+
