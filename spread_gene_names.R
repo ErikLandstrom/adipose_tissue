@@ -31,9 +31,10 @@ spread_gene_names <- function(tb, value_col = "Gene Symbol") {
   library(tidyr)
   
   gene_names <- tb %>% 
+    mutate(`Gene Symbol` = ifelse(`Gene Symbol` == "-", NA, `Gene Symbol`)) %>% # Replaces - with NAs
     group_by(`Majority protein IDs`) %>% 
     mutate(index = 1:n()) %>%  # Creates an index for use with spread
-    select(-list) %>% 
+    select(-protein_ID) %>% 
     spread(key = "index", value = value_col) %>% 
     rename(gene_1 = `1`, gene_2 = `2`, gene_3 = `3`, gene_4 = `4`, gene_5 = `5`)
   
