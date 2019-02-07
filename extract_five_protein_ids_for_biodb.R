@@ -26,7 +26,7 @@
 
 # Function ----------------------------------------------------------------
 
-extract_five_protein_ids <- function(tb) {
+extract_five_protein_ids_for_biodb <- function(tb) {
   
   # Libraries
   library(dplyr)
