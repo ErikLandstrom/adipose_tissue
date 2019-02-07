@@ -21,7 +21,9 @@ remove_contaminants_and_reverse_hits <- function(tb) {
   # Library
   library(tidyverse)
   
-  data_raw <<- tb %>%
+  data_raw <- tb %>%
     filter(is.na(`Potential contaminant`)) %>%
     filter(is.na(Reverse))
+  
+  return(data_raw)
 }
