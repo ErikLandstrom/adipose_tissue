@@ -8,7 +8,7 @@
 # Tidies and cleans up annotation data from biodb. Input data should be in the
 # format:
 
-# gene_name, with each gene ontology type in a separated column.
+# Majority protein IDs, gene_name, with each gene ontology type in a separated column.
 
 # The scripts works with the three gene ontology categories and KEGG pathways
 # (KEGG pathway info in biodb, maybe othe KEGG options work too). But the script
@@ -28,34 +28,31 @@
 
 # Function ----------------------------------------------------------------
 
-tidy_gene_ontology_output_from_biodb <- function(tb, gene_col = gene_name) {
+tidy_gene_ontology_output_from_biodb <- function(tb) {
   
   # Libraries
   library(dplyr)
   library(stringr)
   library(tidyr)
   
-  # Quote
-  gene_col = enquo(gene_col)
   
   # Tidy data
   ontologies <- tb %>% 
-    rename(gene_name = !!gene_col, 
-           bp = `GO - Biological Process`,
+    rename(bp = `GO - Biological Process`,
            cc =`GO - Cellular Component`,
            mf = `GO - Molecular Function`,
            kegg = `KEGG Pathway Info`) %>%
-    dplyr::select(gene_name, bp, cc, mf, kegg) %>% 
+    dplyr::select(`Majority protein IDs`, bp, cc, mf, kegg) %>% 
     gather(bp, cc, mf, kegg, key = "type", value = "annotation") %>% # gathers all annotations into one column
-    group_by(gene_name, type) %>% 
+    group_by(`Majority protein IDs`, type) %>% 
     nest() %>% 
     mutate(data = str_split(data, ";")) %>% # Separates all annotations per gene
     unnest() %>% 
-    separate(data, into = c("annotation_id", "annotation"), sep = " \\[") %>% 
+    separate(data, into = c("annotation_id", "annotation"), sep = "[0-9] \\[") %>% 
     ungroup() %>%  
-    group_by(gene_name, type) %>% 
+    group_by(`Majority protein IDs`, type) %>% 
     distinct(annotation_id, .keep_all = TRUE) %>% # Removes duplicated annotations per gene that for some reason gets created
-    dplyr::filter(!is.na(gene_name)) # Removes NA artifacts in gene_name
+    dplyr::filter(!is.na(`Majority protein IDs`)) # Removes NA artifacts in gene_name
   
   # Clean up strings in annotaion_id column (identifiers)
   ontologies$annotation_id <- str_replace_all(ontologies$annotation_id, 'list\\(annotation = \\"', "")
