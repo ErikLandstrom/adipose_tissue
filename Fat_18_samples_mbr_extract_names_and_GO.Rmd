@@ -1,0 +1,336 @@
+---
+title: "Fat_18_samples_mbr: extractin names and GO"
+author: "Erik"
+date: "6 Februar 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This analysis is for adipose tissue from the MIDY biobank. The data was 
+generated using all 18 samples (742 samples were removed) in Maxquant 1.6.3.4 
+with default setting and match between runs were ON.
+
+# 1 Libraries
+
+```{r}
+library(tidyverse)
+```
+
+# 2 Data processing
+
+## 2.1 
+```{r func_1, echo = FALSE}
+make_tibble_for_DEP <- function(file_name = "proteinGroups.txt") {
+  # Library 
+  library(tidyverse)
+  
+  # Read file
+  data_raw <- read_tsv(file_name, col_types = list("Reverse" = col_character()))
+  
+  # Extract LFQ column names
+  lfq_col_names <- str_extract(colnames(data_raw), "LFQ.+")
+  lfq_col_names <- lfq_col_names[which(!is.na(lfq_col_names))]
+  
+  data_raw <- data_raw %>%
+    dplyr::select(`Protein IDs`, `Majority protein IDs`,
+                  `Fasta headers`, Peptides, 
+                  `Razor + unique peptides`, `Unique peptides`, 
+                  lfq_col_names,
+                  `Only identified by site`, `Reverse`,
+                  `Potential contaminant`)
+  
+  # Return object
+  return(data_raw)
+}
+```
+
+Read proteinGroups.txt output file from MaxQuant.
+
+```{r read_data}
+data_raw <- make_tibble_for_DEP(file_name = "proteinGroups_fat_match_between_runs_no742.txt")
+glimpse(data_raw)
+```
+
+Remove reverse hits from data.
+
+```{r func_2, echo = FALSE}
+remove_reverse_hits <- function(tb) {
+  # Library
+  library(tidyverse)
+  
+  data_raw <- tb %>% 
+    filter(is.na(Reverse))
+  
+  return(data_raw)
+}
+```
+
+```{r rem_rev}
+data_forward <- remove_reverse_hits(data_raw)
+```
+
+`r length(as_vector(data_raw[, 2])) - length(as_vector(data_forward[, 2]))` protein groups were removed.
+
+## 2.2 Get gene names from bioDBnet
+
+Create a vector with 5 IDs for every protein group, that can be used as an input
+in bioDBnet[https://biodbnet-abcc.ncifcrf.gov/db/db2db.php]
+
+```{r func3, echo = FALSE}
+extract_five_protein_ids_for_biodb <- function(tb) {
+  
+  # Libraries
+  library(dplyr)
+  library(tidyr)
+  
+  
+  protein_ids <- tb %>% 
+    dplyr::select(`Majority protein IDs`) %>% 
+    mutate(Protein_IDs = `Majority protein IDs`,
+           protein_ID = str_split(Protein_IDs, ";")) %>% # Split protein group 
+    dplyr::select(`Majority protein IDs`, protein_ID) %>% 
+    unnest(protein_ID) %>% 
+    group_by(`Majority protein IDs`) %>% 
+    top_n(5) # Extracts IDs for first five ocurrences per protein group
+  
+  # Return tibble
+  return(protein_ids)
+}
+```
+
+```{r ids_for_genes}
+ids_for_gene_names <- extract_five_protein_ids_for_biodb(data_forward)
+
+write_tsv(ids_for_gene_names, "fat_18samples_matchbr_ids_for_gene_names.txt")
+```
+
+The refseq IDs were entered into bioDBnet to get gene names, and the gene names
+were then imported from text into excel and then copied to the `fat_18samples_matchbr_ids_for_gene_names.txt` file.
+
+Read `fat_18samples_matchbr_ids_for_gene_names.txt` and reformat it.
+
+
+```{r func4, echo = FALSE}
+spread_gene_names <- function(tb, value_col = "Gene Symbol") {
+  # Libraries
+  library(dplyr)
+  library(tidyr)
+  
+  gene_names <- tb %>% 
+    mutate(`Gene Symbol` = ifelse(`Gene Symbol` == "-", NA, `Gene Symbol`)) %>% # Replaces - with NAs
+    group_by(`Majority protein IDs`) %>% 
+    mutate(index = 1:n()) %>%  # Creates an index for use with spread
+    select(-protein_ID) %>% 
+    spread(key = "index", value = value_col) %>% 
+    rename(gene_1 = `1`, gene_2 = `2`, gene_3 = `3`, gene_4 = `4`, gene_5 = `5`)
+  
+  # Return object
+  return(gene_names)
+}
+```
+
+```{r spread_names}
+# Read file
+gene_name_list <- read_tsv("fat_18samples_matchbr_gene_names_biodb.txt")
+
+# Reformat gene name list
+gene_names <- spread_gene_names(tb = gene_name_list)
+```
+Calculate how many genes have a locus in the first column and a gene name in the
+second or third column.
+
+```{r}
+# Gene name in second column
+gene_names %>% 
+  filter(str_detect(gene_1, "LOC.+") & !str_detect(gene_2, "LOC.+"))
+
+# Gene name in third column
+gene_names %>% 
+  filter(str_detect(gene_1, "LOC.+") & !str_detect(gene_3, "LOC.+"))
+
+# Fourth column 
+gene_names %>% 
+  filter(str_detect(gene_1, "LOC.+") & !str_detect(gene_4, "LOC.+"))
+
+# Fifth column
+gene_names %>% 
+  filter(str_detect(gene_1, "LOC.+") & !str_detect(gene_5, "LOC.+"))
+
+# Check if any columns with NA have gene names
+gene_names %>% 
+  filter(is.na(gene_1))
+```
+
+There's a total of 9 rows with a gene name in a latter column but not the first.
+There's also some contaminants with possible gene names and locus.
+
+```{r func5, echo = FALSE}
+replace_LOC_and_NA_with_gene_name <- function(tb) {
+  # Libraries
+  library(dplyr)
+  
+  gene_names <- tb %>% 
+    mutate(gene_name = if_else(str_detect(gene_1, "LOC.+") & !str_detect(gene_2,"LOC.+"), gene_2, gene_1), # Replace LOC with 2nd name
+           gene_name = if_else(str_detect(gene_name, "LOC.+") & !str_detect(gene_3,"LOC.+"), gene_3, gene_name), # 3rd
+           gene_name = if_else(str_detect(gene_name, "LOC.+") & !str_detect(gene_4,"LOC.+"), gene_4, gene_name), # 4th
+           gene_name = if_else(str_detect(gene_name, "LOC.+") & !str_detect(gene_3,"LOC.+"), gene_5, gene_name), # 5th
+           # Replace NAs with gene name or locus (for contaminants)
+           gene_name = if_else(is.na(gene_name) & !is.na(gene_2), gene_2, gene_name), # Replace NA with 2nd name
+           gene_name = if_else(is.na(gene_name) & !is.na(gene_3), gene_3, gene_name),
+           gene_name = if_else(is.na(gene_name) & !is.na(gene_4), gene_4, gene_name),
+           gene_name = if_else(is.na(gene_name) & !is.na(gene_5), gene_5, gene_name),
+           gene_name = replace_na(gene_name, gene_1)) %>% # Replaces artifact NAs with 1st name
+    dplyr::select(`Majority protein IDs`, gene_name, everything())
+  
+  return(gene_names)
+}
+```
+
+```{r}
+# Replace locus and NA
+gene_names <- replace_LOC_and_NA_with_gene_name(gene_names)
+
+# write tsv
+write_tsv(gene_names, "fat_18samples_matchbr_gene_names_for_GO.txt")
+```
+
+The gene names were entered into bioDBnet to extract gene ontology and KEGG 
+pathways for each protein using their human annotations.
+
+```{r}
+# Read gene ontology data
+ontologies_untidy <- read_tsv("fat_18samples_matchbr_GOs.txt")
+```
+
+Tidy and clean gene ontology columns.
+
+```{r func_6, echo = FALSE}
+tidy_gene_ontology_output_from_biodb <- function(tb) {
+  
+  # Libraries
+  library(dplyr)
+  library(stringr)
+  library(tidyr)
+
+  
+  # Tidy data
+  ontologies <- tb %>% 
+    rename(bp = `GO - Biological Process`,
+           cc =`GO - Cellular Component`,
+           mf = `GO - Molecular Function`,
+           kegg = `KEGG Pathway Info`) %>%
+    dplyr::select(`Majority protein IDs`, bp, cc, mf, kegg) %>% 
+    gather(bp, cc, mf, kegg, key = "type", value = "annotation") %>% # gathers all annotations into one column
+    group_by(`Majority protein IDs`, type) %>% 
+    nest() %>% 
+    mutate(data = str_split(data, ";")) %>% # Separates all annotations per gene
+    unnest() %>% 
+    separate(data, into = c("annotation_id", "annotation"), sep = "[0-9] \\[") %>% 
+    ungroup() %>%  
+    group_by(`Majority protein IDs`, type) %>% 
+    distinct(annotation_id, .keep_all = TRUE) %>% # Removes duplicated annotations per gene that for some reason gets created
+    dplyr::filter(!is.na(`Majority protein IDs`)) # Removes NA artifacts in gene_name
+  
+  # Clean up strings in annotaion_id column (identifiers)
+  ontologies$annotation_id <- str_replace_all(ontologies$annotation_id, 'list\\(annotation = \\"', "")
+  ontologies$annotation_id <- str_replace_all(ontologies$annotation_id, 'list\\(annotation = c\\(\\"', "")
+  ontologies$annotation_id <- str_replace_all(ontologies$annotation_id, '.*\\"\\)', "")
+  
+  # Clean up strings in annotation column (descriptions)
+  ontologies$annotation <- str_replace_all(ontologies$annotation, "Name: ", "")
+  ontologies$annotation <- str_replace_all(ontologies$annotation, "\\].*", "")
+  ontologies$annotation <- str_replace_all(ontologies$annotation, "Pathway Title:", "")
+  
+  # Replace empty strings and ")" with NA in annotation_id column
+  ontologies <- ontologies %>% 
+    mutate(annotation_id = ifelse(annotation_id == "", NA, annotation_id),
+           annotation_id = ifelse(annotation_id == ")", NA, annotation_id)) 
+  
+  # Return object
+  return(ontologies)
+}
+```
+
+```{r clean_ont}
+# Clean ontologies
+ontologies_tidy <- tidy_gene_ontology_output_from_biodb(ontologies_untidy)
+```
+
+Join gene names and ontologies together.
+
+```{r}
+# Join
+names_ontologies_tidy <- full_join(gene_names, ontologies_tidy, by = "Majority protein IDs") 
+
+# Save
+write_tsv(names_ontologies_tidy, "Fat_18samples_mbr_no742_gene_names_GOs.txt")
+```
+
+Convert GOs to perseus format.
+
+```{r func_7, echo = FALSE}
+convert_GOs_to_perseus_format <- function(tb) {
+  
+  # Libraries
+  library(dplyr)
+  library(tidyr)
+  
+  GOs_clean_untidy <- tb %>% 
+    gather(annotation_id, annotation, key = "var", value = "val") %>%
+    unite(type_var, type, var, sep = "_") %>% # Unites GO category and IDs
+    group_by(`Majority protein IDs`, type_var) %>% 
+    mutate(val = paste(val, collapse = ";")) %>% # Paste all GO categories per protein group and category type
+    distinct() %>% # Removes all duplicates
+    group_by(`Majority protein IDs`) %>% 
+    spread(key = "type_var", value = "val")
+  
+  return(GOs_clean_untidy)
+}
+```
+
+```{r}
+GOs_perseus <- convert_GOs_to_perseus_format(ontologies_tidy)
+```
+
+Join maxquant data with gene names and GOs.
+
+```{r}
+gene_names_untidy <- gene_names %>% 
+  unite(alt_gene_names, gene_1:gene_5, sep = ";")
+
+genes_GOs_untidy <- full_join(gene_names_untidy, GOs_perseus, by = "Majority protein IDs")
+
+full_join(data_raw, genes_GOs_untidy, by = "Majority protein IDs")
+```
+
+```{r}
+join_genes_GOs_mqdata <- function(genes_data, GO_data, mq_data) {
+  
+  # Libraries
+  library(tidyr)
+  library(dplyr)
+  
+  # Unite all gene name columns wiht ";" as separator
+  gene_names_untidy <- genes_data %>% 
+    unite(alt_gene_names, gene_1:gene_5, sep = ";")
+  
+  # Join gene names with GOs ready in perseus format
+  genes_GOs_untidy <- full_join(gene_names_untidy, GO_data, by = "Majority protein IDs")
+  
+  # Join gene names and GOs with maxquant data
+  mq_data <- full_join(mq_data, genes_GOs_untidy, by = "Majority protein IDs")
+  
+  return(mq_data)
+}
+```
+
+```{r}
+perseus_formatted_data_with_gene_name_GOs <- join_genes_GOs_mqdata(gene_names, GOs_perseus, data_raw)
+
+# Save
+write_tsv(perseus_formatted_data_with_gene_name_GOs, "Fat_18samples_mbr_no742_perseus_formatted_data.txt")
+```
+
