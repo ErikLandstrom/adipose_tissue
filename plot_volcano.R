@@ -5,7 +5,7 @@
 
 # Description -------------------------------------------------------------
 
-# Plots an volcano from data generated with multiple_ttests.R.
+# Plots a volcano from data generated with multiple_ttests.R.
 
 
 # Arguments ---------------------------------------------------------------
